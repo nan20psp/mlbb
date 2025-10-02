@@ -8,8 +8,8 @@ from dotenv import load_dotenv
 
 # ---------------- Load .env ----------------
 load_dotenv()
-BOT_TOKEN = os.getenv("7927660379:AAGtm-CvAunvvANaaYvzlmRVjjBgJcmEh58")
-ADMIN_ID = int(os.getenv("5821905026"))
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
 # ---------------- Database ----------------
 DB_FILE = "database.json"
