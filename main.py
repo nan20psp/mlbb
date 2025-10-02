@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 # ---------------- Load Environment Variables ----------------
 load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN", ""7927660379:AAGtm-CvAunvvANaaYvzlmRVjjBgJcmEh58)
+BOT_TOKEN = os.getenv("BOT_TOKEN", "7927660379:AAGtm-CvAunvvANaaYvzlmRVjjBgJcmEh58")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "5821905026"))
 
 # Render အတွက် file path သတ်မှတ်ခြင်း
