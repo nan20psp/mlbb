@@ -12,7 +12,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "7927660379:AAGtm-CvAunvvANaaYvzlmRVjjBgJcmEh
 ADMIN_ID = int(os.getenv("ADMIN_ID", "5821905026"))
 
 # Render ပေါ်မှာ file path ကို adjust လုပ်ပါ
-DB_FILE = "/tmp/database.json" if 'RENDER' in os.environ else "database.json"
+DB_FILE = "database.json"
 
 # ---------------- Database Functions ----------------
 def load_db():
