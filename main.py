@@ -6,29 +6,28 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 from dotenv import load_dotenv
 
-# ---------------- Load .env ----------------
+# ---------------- Load Environment Variables ----------------
 load_dotenv()
 BOT_TOKEN = os.getenv("7927660379:AAEsm1s4sdi60OozbA-QiJDEJJvw5d0a9_M")
 ADMIN_ID = int(os.getenv("5821905026"))
 
-# ---------------- Database ----------------
-DB_FILE = "database.json"
+# Render ပေါ်မှာ file path ကို adjust လုပ်ပါ
+DB_FILE = "/tmp/database.json" if 'RENDER' in os.environ else "database.json"
 
-
+# ---------------- Database Functions ----------------
 def load_db():
     if not os.path.exists(DB_FILE):
-        return {
+        default_db = {
             "users": {},
             "stock": {
-                "MLBBbal":
-                {},  # {"1000": ["code1", "code2"], "2000": ["code3"]}
+                "MLBBbal": {},
                 "MLBBph": {},
                 "PUPG": {}
             },
             "receipts": {},
             "topup_requests": {},
             "prices": {
-                "MLBBbal": {},  # {"1000": 2000, "2000": 4000}
+                "MLBBbal": {},
                 "MLBBph": {},
                 "PUPG": {}
             },
@@ -42,84 +41,111 @@ def load_db():
                     "name": "Ma May Phoo Wai"
                 }
             },
-            "sales_total": 0
+            "sales_total": 0,
+            "pending_registrations": {},
+            "cleanup_done": True
         }
-    with open(DB_FILE, "r") as f:
-        data = json.load(f)
+        save_db(default_db)
+        return default_db
+        
+    try:
+        with open(DB_FILE, "r", encoding='utf-8') as f:
+            data = json.load(f)
+        
+        # Update old structure if needed
+        if "stock" in data and isinstance(data["stock"], dict) and "mlbb" in data["stock"]:
+            new_stock = {"MLBBbal": {}, "MLBBph": {}, "PUPG": {}}
+            new_prices = {"MLBBbal": {}, "MLBBph": {}, "PUPG": {}}
 
-    # Update old structure if needed
-    if "stock" in data and isinstance(data["stock"],
-                                      dict) and "mlbb" in data["stock"]:
-        new_stock = {"MLBBbal": {}, "MLBBph": {}, "PUPG": {}}
-        new_prices = {"MLBBbal": {}, "MLBBph": {}, "PUPG": {}}
+            # Migrate MLBB codes assuming they are for MLBBbal
+            mlbb_codes = data["stock"].get("mlbb", [])
+            if mlbb_codes:
+                new_stock["MLBBbal"]["1000"] = mlbb_codes
+                if "price" in data and data["price"] > 0:
+                    new_prices["MLBBbal"]["1000"] = data["price"]
+                else:
+                    new_prices["MLBBbal"]["1000"] = 1000
 
-        # Migrate MLBB codes assuming they are for MLBBbal
-        mlbb_codes = data["stock"].get("mlbb", [])
-        if mlbb_codes:
-            new_stock["MLBBbal"]["1000"] = mlbb_codes
-            if "price" in data and data["price"] > 0:
-                new_prices["MLBBbal"]["1000"] = data["price"]
-            else:
-                new_prices["MLBBbal"]["1000"] = 1000
+            # Migrate PUBG codes to PUPG
+            pubg_codes = data["stock"].get("pubg", [])
+            if pubg_codes:
+                new_stock["PUPG"]["60"] = pubg_codes
+                if "price" in data and data["price"] > 0:
+                    new_prices["PUPG"]["60"] = data["price"]
+                else:
+                    new_prices["PUPG"]["60"] = 1000
 
-        # Migrate PUBG codes to PUPG
-        pubg_codes = data["stock"].get("pubg", [])
-        if pubg_codes:
-            new_stock["PUPG"]["60"] = pubg_codes
-            if "price" in data and data["price"] > 0:
-                new_prices["PUPG"]["60"] = data["price"]
-            else:
-                new_prices["PUPG"]["60"] = 1000
+            data["stock"] = new_stock
+            data["prices"] = new_prices
+            save_db(data)
 
-        data["stock"] = new_stock
-        data["prices"] = new_prices
-        save_db(data)
+        # Migrate PUBG to PUPG in existing structure
+        if "stock" in data and "PUBG" in data["stock"]:
+            data["stock"]["PUPG"] = data["stock"].pop("PUBG")
+        if "prices" in data and "PUBG" in data["prices"]:
+            data["prices"]["PUPG"] = data["prices"].pop("PUBG")
 
-    # Migrate PUBG to PUPG in existing structure
-    if "stock" in data and "PUBG" in data["stock"]:
-        data["stock"]["PUPG"] = data["stock"].pop("PUBG")
-    if "prices" in data and "PUBG" in data["prices"]:
-        data["prices"]["PUPG"] = data["prices"].pop("PUBG")
-
-    # Ensure all expected keys exist
-    if "stock" not in data:
-        data["stock"] = {"MLBBbal": {}, "MLBBph": {}, "PUPG": {}}
-    if "prices" not in data:
-        data["prices"] = {"MLBBbal": {}, "MLBBph": {}, "PUPG": {}}
-    if "topup_requests" not in data: data["topup_requests"] = {}
-    if "users" not in data: data["users"] = {}
-    if "payment" not in data:
-        data["payment"] = {
-            "Wave": {
-                "phone": "09673585480",
-                "name": "Nine Nine"
-            },
-            "Kpay": {
-                "phone": "09678786528",
-                "name": "Ma May Phoo Wai"
+        # Ensure all expected keys exist
+        if "stock" not in data:
+            data["stock"] = {"MLBBbal": {}, "MLBBph": {}, "PUPG": {}}
+        if "prices" not in data:
+            data["prices"] = {"MLBBbal": {}, "MLBBph": {}, "PUPG": {}}
+        if "topup_requests" not in data: 
+            data["topup_requests"] = {}
+        if "users" not in data: 
+            data["users"] = {}
+        if "payment" not in data:
+            data["payment"] = {
+                "Wave": {
+                    "phone": "09673585480",
+                    "name": "Nine Nine"
+                },
+                "Kpay": {
+                    "phone": "09678786528",
+                    "name": "Ma May Phoo Wai"
+                }
             }
+        if "sales_total" not in data: 
+            data["sales_total"] = 0
+        if "pending_registrations" not in data: 
+            data["pending_registrations"] = {}
+
+        # Clear old codes from MLBBph and PUPG (one-time cleanup)
+        if "cleanup_done" not in data:
+            if "MLBBph" in data["stock"]:
+                data["stock"]["MLBBph"] = {}
+            if "PUPG" in data["stock"]:
+                data["stock"]["PUPG"] = {}
+            data["cleanup_done"] = True
+
+        return data
+    except Exception as e:
+        print(f"Error loading database: {e}")
+        # Return default database if loading fails
+        return {
+            "users": {},
+            "stock": {"MLBBbal": {}, "MLBBph": {}, "PUPG": {}},
+            "receipts": {},
+            "topup_requests": {},
+            "prices": {"MLBBbal": {}, "MLBBph": {}, "PUPG": {}},
+            "payment": {
+                "Wave": {"phone": "09673585480", "name": "Nine Nine"},
+                "KPay": {"phone": "09678786528", "name": "Ma May Phoo Wai"}
+            },
+            "sales_total": 0,
+            "pending_registrations": {},
+            "cleanup_done": True
         }
-    if "sales_total" not in data: data["sales_total"] = 0
-    if "pending_registrations" not in data: data["pending_registrations"] = {}
-
-    # Clear old codes from MLBBph and PUPG (one-time cleanup)
-    if "cleanup_done" not in data:
-        if "MLBBph" in data["stock"]:
-            data["stock"]["MLBBph"] = {}
-        if "PUPG" in data["stock"]:
-            data["stock"]["PUPG"] = {}
-        data["cleanup_done"] = True
-
-    return data
-
 
 def save_db(db):
-    with open(DB_FILE, "w") as f:
-        json.dump(db, f, indent=2)
+    try:
+        with open(DB_FILE, "w", encoding='utf-8') as f:
+            json.dump(db, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"Error saving database: {e}")
 
-
+# Load database at startup
 db = load_db()
-
 
 # ---------------- Helpers ----------------
 def get_user(uid):
@@ -128,10 +154,8 @@ def get_user(uid):
         save_db(db)
     return db["users"][uid]
 
-
 def is_user_approved(uid):
     return uid in db["users"] and db["users"][uid].get("approved", False)
-
 
 def generate_receipt_id():
     while True:
@@ -139,10 +163,8 @@ def generate_receipt_id():
         if rid not in db["receipts"] and rid not in db["topup_requests"]:
             return rid
 
-
 def validate_receipt_id(rid):
     return rid.isdigit() and 5 <= len(rid) <= 6
-
 
 def get_available_amounts(game_type):
     """Get available amounts for a game type that have stock"""
@@ -153,7 +175,6 @@ def get_available_amounts(game_type):
                 amounts.append(amount)
     return sorted(amounts)
 
-
 def get_game_display_name(game_type):
     names = {
         "MLBBbal": "Mobile Legends (Bal)",
@@ -162,25 +183,23 @@ def get_game_display_name(game_type):
     }
     return names.get(game_type, game_type)
 
-
 # ---------------- User Commands ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     keyboard = [[
-        InlineKeyboardButton("ðŸ“Œ á€¡á€€á€±á€¬á€„á€·á€ºá€–á€½á€„á€·á€ºá€›á€”á€º", callback_data="register")
-    ], [InlineKeyboardButton("ðŸ’° á€œá€€á€ºá€€á€»á€”á€ºá€„á€½á€±", callback_data="balance")],
-                [InlineKeyboardButton("ðŸ’³ á€„á€½á€±á€–á€¼á€Šá€·á€ºá€›á€”á€º", callback_data="topup")],
-                [InlineKeyboardButton("ðŸ›’ á€€á€¯á€’á€ºá€á€šá€ºá€›á€”á€º", callback_data="buy")],
-                [InlineKeyboardButton("â„¹ï¸ á€¡á€€á€°á€¡á€Šá€®", callback_data="help")]]
+        InlineKeyboardButton("📋 အကောင့်ဖွင့်ရန်", callback_data="register")
+    ], [InlineKeyboardButton("💵 ဘေလင့်ကြည့်ရန်", callback_data="balance")],
+                [InlineKeyboardButton("💰 ဘေလင့်ဖြည့်ရန်", callback_data="topup")],
+                [InlineKeyboardButton("🛒 အိုင်တီယူရန်", callback_data="buy")],
+                [InlineKeyboardButton("ℹ️ အကူအညီ", callback_data="help")]]
     if update.message:
         await update.message.reply_text(
-            f"ðŸ‘‹ á€™á€„á€ºá€¹á€‚á€œá€¬á€•á€« {user.first_name}! á€€á€¼á€­á€¯á€†á€­á€¯á€•á€«á€á€šá€º!",
+            f"👋 ကြိုဆိုပါတယ် {user.first_name}! ကျေးဇူးပြု၍အောက်ပါမှရွေးချယ်ပါ!",
             reply_markup=InlineKeyboardMarkup(keyboard))
     else:
         await update.callback_query.edit_message_text(
-            f"ðŸ‘‹ á€™á€„á€ºá€¹á€‚á€œá€¬á€•á€« {user.first_name}! á€€á€¼á€­á€¯á€†á€­á€¯á€•á€«á€á€šá€º!",
+            f"👋 ကြိုဆိုပါတယ် {user.first_name}! ကျေးဇူးပြု၍အောက်ပါမှရွေးချယ်ပါ!",
             reply_markup=InlineKeyboardMarkup(keyboard))
-
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -195,18 +214,18 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "register":
         if uid in db["users"] and db["users"][uid].get("approved", False):
             keyboard = [[
-                InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="start")
+                InlineKeyboardButton("🏠 မူလစာမျက်နှာသို့", callback_data="start")
             ]]
             await query.edit_message_text(
-                "âœ… á€¡á€€á€±á€¬á€„á€·á€ºá€–á€½á€„á€·á€ºá€•á€¼á€®á€¸á€•á€«á€•á€¼á€®á‹",
+                "✅ အကောင့်ဖွင့်ပြီးဖြစ်ပါသည်။",
                 reply_markup=InlineKeyboardMarkup(keyboard))
             return
         elif uid in db["pending_registrations"]:
             keyboard = [[
-                InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="start")
+                InlineKeyboardButton("🏠 မူလစာမျက်နှာသို့", callback_data="start")
             ]]
             await query.edit_message_text(
-                "â³ á€¡á€€á€±á€¬á€„á€·á€ºá€–á€½á€„á€·á€ºá€á€±á€¬á€„á€ºá€¸á€†á€­á€¯á€™á€¾á€¯ á€…á€±á€¬á€„á€·á€ºá€†á€­á€¯á€„á€ºá€¸á€”á€±á€•á€«á€žá€Šá€ºá‹ Admin á€™á€¾ á€œá€€á€ºá€á€¶á€•á€±á€¸á€›á€”á€º á€…á€±á€¬á€„á€·á€ºá€•á€«á‹",
+                "⏳ အကောင့်ဖွင့်တောင်းခံချက်ကို စောင့်ဆိုင်းနေပါသည်။ Admin မှ အတည်ပြုပေးမည်ဖြစ်ပါသည်။",
                 reply_markup=InlineKeyboardMarkup(keyboard))
             return
 
@@ -220,33 +239,33 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Send to admin
         keyboard = [[
-            InlineKeyboardButton("âœ… á€œá€€á€ºá€á€¶á€›á€”á€º",
+            InlineKeyboardButton("✅ အတည်ပြုရန်",
                                  callback_data=f"approve_reg_{uid}"),
-            InlineKeyboardButton("âŒ á€„á€¼á€„á€ºá€¸á€•á€šá€ºá€›á€”á€º",
+            InlineKeyboardButton("❌ ငြင်းပယ်ရန်",
                                  callback_data=f"reject_reg_{uid}")
         ]]
         await context.bot.send_message(
             chat_id=ADMIN_ID,
-            text=f"ðŸ“¥ á€¡á€€á€±á€¬á€„á€·á€ºá€–á€½á€„á€·á€ºá€á€±á€¬á€„á€ºá€¸á€†á€­á€¯á€™á€¾á€¯:\n"
-            f"ðŸ‘¤ á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€žá€° ID: {uid}\n"
-            f"ðŸ“ á€¡á€™á€Šá€º: {query.from_user.first_name}\n"
-            f"ðŸ‘¤ Username: @{query.from_user.username or 'á€™á€›á€¾á€­'}",
+            text=f"📥 အကောင့်ဖွင့်တောင်းခံချက်အသစ်:\n"
+            f"🆔 သုံးစွဲသူ ID: {uid}\n"
+            f"📝 အမည်: {query.from_user.first_name}\n"
+            f"👤 Username: @{query.from_user.username or 'မရှိ'}",
             reply_markup=InlineKeyboardMarkup(keyboard))
 
         keyboard = [[
-            InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="start")
+            InlineKeyboardButton("🏠 မူလစာမျက်နှာသို့", callback_data="start")
         ]]
         await query.edit_message_text(
-            "ðŸ“ á€¡á€€á€±á€¬á€„á€·á€ºá€–á€½á€„á€·á€ºá€á€±á€¬á€„á€ºá€¸á€†á€­á€¯á€™á€¾á€¯ Admin á€‘á€¶á€•á€­á€¯á€·á€•á€¼á€®á€¸á€•á€«á€•á€¼á€®á‹ á€…á€±á€¬á€„á€·á€ºá€†á€­á€¯á€„á€ºá€¸á€•á€«á‹",
+            "📝 အကောင့်ဖွင့်တောင်းခံချက်ကို Admin ထံပို့ပြီးပါပြီ။ အတည်ပြုခံရပါက သတင်းပို့ပေးပါမည်။",
             reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif data == "balance":
         if not is_user_approved(uid):
             keyboard = [[
-                InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="start")
+                InlineKeyboardButton("🏠 မူလစာမျက်နှာသို့", callback_data="start")
             ]]
             await query.edit_message_text(
-                "âš ï¸ á€¡á€€á€±á€¬á€„á€·á€ºá€™á€¾ Admin á€œá€€á€ºá€á€¶á€á€¼á€„á€ºá€¸á€™á€›á€¾á€­á€•á€«á‹",
+                "⚠️ သင့်အကောင့်ကို Admin မှ အတည်ပြုရပါမည်။",
                 reply_markup=InlineKeyboardMarkup(keyboard))
             return
 
@@ -264,30 +283,30 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if not can_buy:
             keyboard.append(
-                [InlineKeyboardButton("ðŸ’³ á€„á€½á€±á€–á€¼á€Šá€·á€ºá€›á€”á€º", callback_data="topup")])
+                [InlineKeyboardButton("💰 ဘေလင့်ဖြည့်ရန်", callback_data="topup")])
         keyboard.append(
-            [InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="start")])
+            [InlineKeyboardButton("🏠 မူလစာမျက်နှာသို့", callback_data="start")])
         await query.edit_message_text(
-            f"ðŸ’° á€œá€€á€ºá€€á€»á€”á€ºá€„á€½á€±: {user['balance']} MMK",
+            f"💵 ဘေလင့်လက်ကျန်: {user['balance']} MMK",
             reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif data == "topup":
         if not is_user_approved(uid):
             keyboard = [[
-                InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="start")
+                InlineKeyboardButton("🏠 မူလစာမျက်နှာသို့", callback_data="start")
             ]]
             await query.edit_message_text(
-                "âš ï¸ á€¡á€€á€±á€¬á€„á€·á€ºá€™á€¾ Admin á€œá€€á€ºá€á€¶á€á€¼á€„á€ºá€¸á€™á€›á€¾á€­á€•á€«á‹",
+                "⚠️ သင့်အကောင့်ကို Admin မှ အတည်ပြုရပါမည်။",
                 reply_markup=InlineKeyboardMarkup(keyboard))
             return
 
         keyboard = [
-            [InlineKeyboardButton("ðŸ“± Wave", callback_data="topup_wave")],
-            [InlineKeyboardButton("ðŸ“± Kpay", callback_data="topup_kpay")],
-            [InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="start")]
+            [InlineKeyboardButton("📱 Wave", callback_data="topup_wave")],
+            [InlineKeyboardButton("📱 Kpay", callback_data="topup_kpay")],
+            [InlineKeyboardButton("🏠 မူလစာမျက်နှာသို့", callback_data="start")]
         ]
         await query.edit_message_text(
-            "ðŸ’³ á€„á€½á€±á€–á€¼á€Šá€·á€ºá€™á€Šá€·á€ºá€”á€Šá€ºá€¸á€œá€™á€ºá€¸á€›á€½á€±á€¸á€•á€«:",
+            "💰 ဘေလင့်ဖြည့်ရန် ငွေလွှဲနည်းလမ်းရွေးချယ်ပါ:",
             reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif data.startswith("topup_"):
@@ -296,22 +315,22 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         context.user_data['topup_method'] = payment_method
         keyboard = [[
-            InlineKeyboardButton(f"ðŸ“‹ {payment_info['phone']}",
+            InlineKeyboardButton(f"📋 {payment_info['phone']}",
                                  callback_data=f"copy_{payment_info['phone']}")
-        ], [InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="topup")]]
+        ], [InlineKeyboardButton("🏠 မူလစာမျက်နှာသို့", callback_data="topup")]]
 
         await query.edit_message_text(
-            f"ðŸ’³ {payment_method} á€„á€½á€±á€–á€¼á€Šá€·á€ºá€›á€”á€º:\n\n"
-            f"ðŸ“± á€–á€¯á€”á€ºá€¸á€”á€¶á€•á€«á€á€º: {payment_info['phone']}\n"
-            f"ðŸ‘¤ á€¡á€™á€Šá€º: {payment_info['name']}\n\n"
-            f"ðŸ“‹ á€–á€¯á€”á€ºá€¸á€”á€¶á€•á€«á€á€ºá€€á€°á€¸á€šá€°á€›á€”á€º á€¡á€±á€¬á€€á€ºá€€ á€á€œá€¯á€á€ºá€”á€¾á€­á€•á€ºá€•á€«:\n\n"
-            f"ðŸ’° á€œá€½á€¾á€²á€•á€¼á€®á€¸á€›á€„á€º á€•á€¼á€±á€…á€¬á€•á€¯á€¶á€¡á€›á€„á€ºá€•á€­á€¯á€·á€•á€«á‹ á€•á€¼á€®á€¸á€›á€„á€º:\n"
-            f"â€¢ á€•á€¼á€±á€…á€¬ ID (á€”á€±á€¬á€€á€ºá€†á€¯á€¶á€¸ á…á€œá€¯á€¶á€¸ á€žá€­á€¯á€·á€™á€Ÿá€¯á€á€º á†á€œá€¯á€¶á€¸)\n"
-            f"â€¢ á€œá€½á€¾á€²á€á€²á€·á€„á€½á€±á€•á€™á€¬á€\n"
-            f"á€›á€±á€¸á€•á€¼á€®á€¸á€•á€­á€¯á€·á€•á€«á‹\n\n"
-            f"âš ï¸ á€žá€á€­á€•á€±á€¸á€á€»á€€á€º: á€•á€¼á€±á€…á€¬ ID á€”á€¾á€„á€·á€º á€•á€™á€¬á€á€™á€¾á€¬á€¸á€›á€±á€¸á€™á€­á€›á€„á€º á€„á€½á€±á€†á€¯á€¶á€¸á€•á€«á€™á€Šá€º\n\n"
-            f"â° á€„á€½á€±á€œá€½á€¾á€²á€•á€¼á€®á€¸ á…á€™á€­á€”á€…á€ºá€¡á€á€½á€„á€ºá€¸á€•á€­á€¯á€·á€•á€«\n"
-            f"â„¹ï¸ KPay á€„á€½á€±á€œá€½á€¾á€²á€žá€°á€€á€­á€¯ á€™á€­á€™á€­á€¡á€€á€±á€¬á€„á€·á€ºá€›á€²á€· KPay á€¡á€™á€Šá€ºá€‘á€Šá€·á€ºá€›á€±á€¸á€•á€±á€¸á€•á€«",
+            f"💰 {payment_method} ဘေလင့်ဖြည့်ရန်:\n\n"
+            f"📱 ဖုန်းနံပါတ်: {payment_info['phone']}\n"
+            f"👤 အမည်: {payment_info['name']}\n\n"
+            f"📋 ဖုန်းနံပါတ်ကို ကူးယူရန် အောက်ပါခလုတ်ကိုနှိပ်ပါ:\n\n"
+            f"💵 ငွေလွှဲပြီးနောက် အောက်ပါအချက်များပို့ပေးပါ:\n"
+            f"• ငွေလွှဲသူ ID (ဘေလင့်ဖြည့်ရန်)\n"
+            f"• ငွေလွှဲသည့်ပမာဏ\n"
+            f"ကျေးဇူးပြု၍အတိအကျပို့ပေးပါ။\n\n"
+            f"⚠️ သတိပြုရန်: ငွေလွှဲသူ ID မှားယွင်းပါက ငွေမရရှိနိုင်ပါ\n\n"
+            f"📸 ငွေလွှဲပြီးသည့်ဓာတ်ပုံ ပို့ပေးပါ\n"
+            f"ℹ️ KPay ငွေလွှဲပါက KPay အမည်ကိုလည်းပို့ပေးပါ",
             reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif data.startswith("copy_"):
@@ -320,33 +339,33 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=query.from_user.id,
                                        text=phone_number)
         await query.answer(
-            f"ðŸ“‹ {phone_number} á€•á€­á€¯á€·á€•á€¼á€®á€¸á€•á€«á€•á€¼á€®! á€¡á€•á€±á€«á€ºá€€ á€‚á€á€”á€ºá€¸á€€á€­á€¯ á€€á€°á€¸á€šá€°á€•á€«!",
+            f"📋 {phone_number} ကူးယူပြီးပါပြီ! ကျေးဇူးပြု၍ငွေလွှဲပြီးဓာတ်ပုံပို့ပေးပါ!",
             show_alert=True)
 
     elif data == "help":
         keyboard = [[
-            InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="start")
+            InlineKeyboardButton("🏠 မူလစာမျက်နှာသို့", callback_data="start")
         ]]
         await query.edit_message_text(
-            "â„¹ï¸ á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€”á€Šá€ºá€¸:\n\n"
-            "1ï¸âƒ£ á€¡á€€á€±á€¬á€„á€·á€ºá€–á€½á€„á€·á€ºá€•á€«\n"
-            "2ï¸âƒ£ á€œá€€á€ºá€€á€»á€”á€ºá€„á€½á€±á€€á€¼á€Šá€·á€ºá€•á€«\n"
-            "3ï¸âƒ£ á€„á€½á€±á€–á€¼á€Šá€·á€ºá€•á€«\n"
-            "4ï¸âƒ£ á€€á€¯á€’á€ºá€á€šá€ºá€šá€°á€•á€«\n\n"
-            "ðŸ“Œ á€œá€±á€·á€œá€¬á€›á€”á€º:\n"
-            "â€¢ Admin á€™á€¾ á€œá€€á€ºá€á€¶á€•á€¼á€®á€¸á€™á€¾ á€€á€¯á€’á€ºá€›á€›á€¾á€­á€•á€«á€™á€Šá€º\n"
-            "â€¢ á€á€šá€ºá€šá€°á€™á€¾á€¯á€™á€¾á€á€ºá€á€™á€ºá€¸á€žá€­á€™á€ºá€¸á€†á€Šá€ºá€¸á€•á€«á€™á€Šá€º\n"
-            "â€¢ á€•á€¼á€±á€…á€¬á€”á€²á€·á€á€šá€ºá€›á€„á€º Admin á€œá€€á€ºá€á€¶á€•á€¼á€®á€¸á€™á€¾ á€€á€¯á€’á€ºá€›á€›á€¾á€­á€™á€Šá€º\n"
-            "â€¢ á€œá€€á€ºá€€á€»á€”á€ºá€„á€½á€±á€”á€²á€·á€á€šá€ºá€›á€„á€º á€á€»á€€á€ºá€á€»á€„á€ºá€¸á€›á€›á€¾á€­á€™á€Šá€º",
+            "ℹ️ အသုံးပြုနည်း:\n\n"
+            "1️⃣ အကောင့်ဖွင့်ရန်\n"
+            "2️⃣ ဘေလင့်ကြည့်ရန်\n"
+            "3️⃣ ဘေလင့်ဖြည့်ရန်\n"
+            "4️⃣ အိုင်တီယူရန်\n\n"
+            "📋 လမ်းညွှန်ချက်များ:\n"
+            "• Admin မှ အတည်ပြုပြီးမှသာ အိုင်တီဝယ်ယူနိုင်မည်\n"
+            "• ဝယ်ယူပြီးနောက် ကုဒ်များရရှိမည်\n"
+            "• ငွေလွှဲသူ ID ဖြင့် အိုင်တီဝယ်ယူနိုင်သည်\n"
+            "• ဘေလင့်လက်ကျန်ဖြင့်လည်း ဝယ်ယူနိုင်သည်",
             reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif data == "buy":
         if not is_user_approved(uid):
             keyboard = [[
-                InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="start")
+                InlineKeyboardButton("🏠 မူလစာမျက်နှာသို့", callback_data="start")
             ]]
             await query.edit_message_text(
-                "âš ï¸ á€¡á€€á€±á€¬á€„á€·á€ºá€™á€¾ Admin á€œá€€á€ºá€á€¶á€á€¼á€„á€ºá€¸á€™á€›á€¾á€­á€•á€«á‹",
+                "⚠️ သင့်အကောင့်ကို Admin မှ အတည်ပြုရပါမည်။",
                 reply_markup=InlineKeyboardMarkup(keyboard))
             return
 
@@ -364,24 +383,24 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     game_name = get_game_display_name(game_type)
                     keyboard.append([
                         InlineKeyboardButton(
-                            f"ðŸŽ® {game_name} ({total_codes})",
+                            f"🎮 {game_name} ({total_codes})",
                             callback_data=f"select_{game_type}")
                     ])
                     available_games.append(game_type)
 
         if not available_games:
             keyboard = [[
-                InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="start")
+                InlineKeyboardButton("🏠 မူလစာမျက်နှာသို့", callback_data="start")
             ]]
             await query.edit_message_text(
-                "âš ï¸ á€œá€±á€¬á€œá€±á€¬á€†á€šá€º á€€á€¯á€’á€ºá€™á€›á€¾á€­á€•á€«á‹",
+                "⚠️ လက်ရှိမှာရနိုင်သောအိုင်တီမရှိပါ။",
                 reply_markup=InlineKeyboardMarkup(keyboard))
             return
 
         keyboard.append(
-            [InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="start")])
+            [InlineKeyboardButton("🏠 မူလစာမျက်နှာသို့", callback_data="start")])
         await query.edit_message_text(
-            "ðŸŽ® á€‚á€­á€™á€ºá€¸á€¡á€™á€»á€­á€¯á€¸á€¡á€…á€¬á€¸á€›á€½á€±á€¸á€•á€«:",
+            "🎮 ဂိမ်းရွေးချယ်ရန်:",
             reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif data.startswith("select_"):
@@ -390,10 +409,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if not amounts:
             keyboard = [[
-                InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="buy")
+                InlineKeyboardButton("🏠 မူလစာမျက်နှာသို့", callback_data="buy")
             ]]
             await query.edit_message_text(
-                "âš ï¸ á€’á€®á€‚á€­á€™á€ºá€¸á€¡á€á€½á€€á€º á€€á€¯á€’á€ºá€™á€›á€¾á€­á€•á€«á‹",
+                "⚠️ ဤဂိမ်းအတွက်ရနိုင်သောအိုင်တီမရှိပါ။",
                 reply_markup=InlineKeyboardMarkup(keyboard))
             return
 
@@ -406,14 +425,14 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             unit = "Coin" if "MLBB" in game_type else "UC"
             keyboard.append([
                 InlineKeyboardButton(
-                    f"ðŸ’Ž {amount} {unit} - {price} MMK ({codes_count})",
+                    f"💳 {amount} {unit} - {price} MMK ({codes_count})",
                     callback_data=f"amount_{game_type}_{amount}")
             ])
 
         keyboard.append(
-            [InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="buy")])
+            [InlineKeyboardButton("🏠 မူလစာမျက်နှာသို့", callback_data="buy")])
         await query.edit_message_text(
-            f"ðŸŽ® {game_name}\nðŸ’Ž á€¡á€›á€±á€¡á€á€½á€€á€ºá€›á€½á€±á€¸á€•á€«:",
+            f"🎮 {game_name}\n💳 ပမာဏရွေးချယ်ရန်:",
             reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif data.startswith("amount_"):
@@ -424,11 +443,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if amount not in db["stock"].get(
                 game_type, {}) or not db["stock"][game_type][amount]:
             keyboard = [[
-                InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º",
+                InlineKeyboardButton("🏠 မူလစာမျက်နှာသို့",
                                      callback_data=f"select_{game_type}")
             ]]
             await query.edit_message_text(
-                "âš ï¸ á€’á€®á€•á€™á€¬á€á€¡á€á€½á€€á€º á€€á€¯á€’á€ºá€™á€›á€¾á€­á€•á€«á‹",
+                "⚠️ ဤပမာဏအတွက်ရနိုင်သောအိုင်တီမရှိပါ။",
                 reply_markup=InlineKeyboardMarkup(keyboard))
             return
 
@@ -445,19 +464,19 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         }
 
         keyboard = [[
-            InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º",
+            InlineKeyboardButton("🏠 မူလစာမျက်နှာသို့",
                                  callback_data=f"select_{game_type}")
         ]]
 
         game_name = get_game_display_name(game_type)
         unit = "Coin" if "MLBB" in game_type else "UC"
         await query.edit_message_text(
-            f"ðŸŽ® {game_name}\n"
-            f"ðŸ’Ž {amount} {unit}\n"
-            f"ðŸ’° á€…á€»á€±á€¸á€”á€¾á€¯á€”á€ºá€¸: {price} MMK/á€€á€¯á€’á€º\n"
-            f"ðŸ’³ á€œá€€á€ºá€€á€»á€”á€ºá€„á€½á€±: {user['balance']} MMK\n"
-            f"ðŸ“¦ á€›á€›á€¾á€­á€”á€­á€¯á€„á€ºá€žá€±á€¬ á€€á€¯á€’á€º: {max_quantity} á€á€¯\n\n"
-            f"ðŸ“ á€œá€­á€¯á€á€»á€„á€ºá€žá€±á€¬ á€€á€¯á€’á€ºá€¡á€›á€±á€¡á€á€½á€€á€º á€›á€±á€¸á€•á€­á€¯á€·á€•á€« (1 to {max_quantity}):",
+            f"🎮 {game_name}\n"
+            f"💳 {amount} {unit}\n"
+            f"💵 ဈေးနှုန်း: {price} MMK/အိုင်တီ\n"
+            f"💰 ဘေလင့်လက်ကျန်: {user['balance']} MMK\n"
+            f"📊 ရနိုင်သောအရေအတွက်: {max_quantity} ခု\n\n"
+            f"📝 ဝယ်ယူမည့်အရေအတွက်ရိုက်ထည့်ပါ (1 to {max_quantity}):",
             reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif data.startswith("quantity_"):
@@ -474,32 +493,32 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user["balance"] >= total_price:
             keyboard.append([
                 InlineKeyboardButton(
-                    f"ðŸ’° á€œá€€á€ºá€€á€»á€”á€ºá€„á€½á€±á€”á€²á€·á€á€šá€ºá€›á€”á€º ({total_price} MMK)",
+                    f"💵 ဘေလင့်ဖြင့်ဝယ်ယူရန် ({total_price} MMK)",
                     callback_data=f"buy_balance_{game_type}_{amount}_{quantity}"
                 )
             ])
         else:
             keyboard.append(
-                [InlineKeyboardButton("ðŸ’³ á€„á€½á€±á€–á€¼á€Šá€·á€ºá€›á€”á€º", callback_data="topup")])
+                [InlineKeyboardButton("💰 ဘေလင့်ဖြည့်ရန်", callback_data="topup")])
 
         keyboard.append([
             InlineKeyboardButton(
-                "ðŸ“„ á€•á€¼á€±á€…á€¬á€”á€²á€·á€á€šá€ºá€›á€”á€º",
+                "📄 ငွေလွှဲသူIDဖြင့်ဝယ်ယူရန်",
                 callback_data=f"buy_receipt_{game_type}_{amount}_{quantity}")
         ])
         keyboard.append([
-            InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º",
+            InlineKeyboardButton("🏠 မူလစာမျက်နှာသို့",
                                  callback_data=f"amount_{game_type}_{amount}")
         ])
 
         game_name = get_game_display_name(game_type)
         unit = "Coin" if "MLBB" in game_type else "UC"
         await query.edit_message_text(
-            f"ðŸŽ® {game_name}\n"
-            f"ðŸ’Ž {amount} {unit} x {quantity}\n"
-            f"ðŸ’° á€…á€¯á€…á€¯á€•á€±á€«á€„á€ºá€¸: {total_price} MMK\n"
-            f"ðŸ’³ á€œá€€á€ºá€€á€»á€”á€ºá€„á€½á€±: {user['balance']} MMK\n\n"
-            f"ðŸ’³ á€„á€½á€±á€•á€±á€¸á€á€»á€±á€™á€¾á€¯á€”á€Šá€ºá€¸á€œá€™á€ºá€¸á€›á€½á€±á€¸á€•á€«:",
+            f"🎮 {game_name}\n"
+            f"💳 {amount} {unit} x {quantity}\n"
+            f"💵 စုစုပေါင်းဈေးနှုန်း: {total_price} MMK\n"
+            f"💰 ဘေလင့်လက်ကျန်: {user['balance']} MMK\n\n"
+            f"💰 ငွေပေးချေမှုနည်းလမ်းရွေးချယ်ရန်:",
             reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif data.startswith("buy_balance_"):
@@ -514,25 +533,25 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if user["balance"] < total_price:
             keyboard = [[
-                InlineKeyboardButton("ðŸ’³ á€„á€½á€±á€–á€¼á€Šá€·á€ºá€›á€”á€º", callback_data="topup")
+                InlineKeyboardButton("💰 ဘေလင့်ဖြည့်ရန်", callback_data="topup")
             ],
                         [
                             InlineKeyboardButton(
-                                "ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º",
+                                "🏠 မူလစာမျက်နှာသို့",
                                 callback_data=
                                 f"quantity_{game_type}_{amount}_{quantity}")
                         ]]
             await query.edit_message_text(
-                "âš ï¸ á€œá€€á€ºá€€á€»á€”á€ºá€„á€½á€±á€™á€œá€¯á€¶á€œá€±á€¬á€€á€ºá€•á€«á‹",
+                "⚠️ ဘေလင့်လက်ကျန်မလုံလောက်ပါ။",
                 reply_markup=InlineKeyboardMarkup(keyboard))
             return
 
         if len(db["stock"][game_type][amount]) < quantity:
             keyboard = [[
-                InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="buy")
+                InlineKeyboardButton("🏠 မူလစာမျက်နှာသို့", callback_data="buy")
             ]]
             await query.edit_message_text(
-                "âš ï¸ á€œá€¯á€¶á€œá€±á€¬á€€á€ºá€žá€±á€¬ á€€á€¯á€’á€ºá€™á€›á€¾á€­á€•á€«á‹",
+                "⚠️ လက်ရှိမှာရနိုင်သောအိုင်တီမလုံလောက်ပါ။",
                 reply_markup=InlineKeyboardMarkup(keyboard))
             return
 
@@ -557,17 +576,17 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         })
         save_db(db)
 
-        codes_text = "\n".join([f"ðŸ”‘ {code}" for code in codes])
+        codes_text = "\n".join([f"🔑 {code}" for code in codes])
         keyboard = [[
-            InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="start")
+            InlineKeyboardButton("🏠 မူလစာမျက်နှာသို့", callback_data="start")
         ]]
         await query.edit_message_text(
-            f"âœ… á€á€šá€ºá€šá€°á€™á€¾á€¯á€¡á€±á€¬á€„á€ºá€™á€¼á€„á€ºá€•á€«á€•á€¼á€®!\n\n"
-            f"ðŸŽ® {game_name}\n"
-            f"ðŸ’Ž {amount} {unit} x {quantity}\n"
-            f"ðŸ’° á€…á€¯á€…á€¯á€•á€±á€«á€„á€ºá€¸: {total_price} MMK\n\n"
-            f"ðŸ”‘ á€€á€¯á€’á€ºá€™á€»á€¬á€¸:\n{codes_text}\n\n"
-            f"ðŸ’³ á€œá€€á€ºá€€á€»á€”á€ºá€„á€½á€±: {user['balance']} MMK",
+            f"✅ အိုင်တီဝယ်ယူမှုအောင်မြင်ပါသည်!\n\n"
+            f"🎮 {game_name}\n"
+            f"💳 {amount} {unit} x {quantity}\n"
+            f"💵 စုစုပေါင်းဈေးနှုန်း: {total_price} MMK\n\n"
+            f"🔑 အိုင်တီကုဒ်များ:\n{codes_text}\n\n"
+            f"💰 ဘေလင့်လက်ကျန်: {user['balance']} MMK",
             reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif data.startswith("buy_receipt_"):
@@ -583,58 +602,58 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         keyboard = [[
             InlineKeyboardButton(
-                "ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º",
+                "🏠 မူလစာမျက်နှာသို့",
                 callback_data=f"quantity_{game_type}_{amount}_{quantity}")
         ]]
         await query.edit_message_text(
-            "ðŸ“„ á€•á€¼á€±á€…á€¬á€”á€²á€·á€á€šá€ºá€šá€°á€›á€”á€º:\n\n"
-            "1ï¸âƒ£ á€•á€¼á€±á€…á€¬á€•á€¯á€¶á€¡á€›á€„á€ºá€•á€­á€¯á€·á€•á€«\n"
-            "2ï¸âƒ£ á€•á€¼á€®á€¸á€›á€„á€º á€•á€¼á€±á€…á€¬ ID (á€”á€±á€¬á€€á€ºá€†á€¯á€¶á€¸ á…á€œá€¯á€¶á€¸ á€žá€­á€¯á€·á€™á€Ÿá€¯á€á€º á†á€œá€¯á€¶á€¸) á€›á€±á€¸á€•á€­á€¯á€·á€•á€«\n\n"
-            "âš ï¸ á€žá€á€­á€•á€±á€¸á€á€»á€€á€º: á€•á€¼á€±á€…á€¬ ID á€™á€¾á€¬á€¸á€›á€±á€¸á€™á€­á€›á€„á€º á€„á€½á€±á€†á€¯á€¶á€¸á€•á€«á€™á€Šá€º",
+            "📄 ငွေလွှဲသူIDဖြင့်ဝယ်ယူရန်:\n\n"
+            "1️⃣ ငွေလွှဲပြီးသည့်ဓာတ်ပုံပို့ပေးပါ\n"
+            "2️⃣ ငွေလွှဲသူ ID (ဘေလင့်ဖြည့်ရန်) ရိုက်ထည့်ပေးပါ\n\n"
+            "⚠️ သတိပြုရန်: ငွေလွှဲသူ ID မှားယွင်းပါက အိုင်တီမရနိုင်ပါ",
             reply_markup=InlineKeyboardMarkup(keyboard))
 
     # Admin approval handlers
     elif data.startswith("message_topup_"):
         if uid != ADMIN_ID:
             await query.edit_message_text(
-                "âš ï¸ Admin á€žá€¬á€œá€»á€¾á€„á€º á€’á€®á€¡á€›á€¬á€€á€­á€¯á€œá€¯á€•á€ºá€”á€­á€¯á€„á€ºá€•á€«á€žá€Šá€ºá‹")
+                "⚠️ Admin မဟုတ်ပါက ဤလုပ်ဆောင်ချက်ကိုသုံးခွင့်မရှိပါ။")
             return
 
         receipt_id = data.split("_")[2]
         if receipt_id not in db["topup_requests"]:
-            await query.edit_message_text("âš ï¸ á€„á€½á€±á€–á€¼á€Šá€·á€ºá€á€±á€¬á€„á€ºá€¸á€†á€­á€¯á€™á€¾á€¯á€™á€á€½á€±á€·á€•á€«á‹")
+            await query.edit_message_text("⚠️ ဘေလင့်ဖြည့်တောင်းခံချက်မရှိပါ။")
             return
 
         request = db["topup_requests"][receipt_id]
         user_id = request["user_id"]
         context.user_data['admin_messaging'] = {'user_id': user_id}
-        await query.edit_message_text("ðŸ’¬ á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€žá€°á€‘á€¶á€•á€­á€¯á€·á€œá€­á€¯á€žá€±á€¬á€…á€¬á€€á€­á€¯ á€›á€±á€¸á€•á€«:")
+        await query.edit_message_text("💬 သုံးစွဲသူထံမက်ဆေ့ပို့ရန် စာရိုက်ထည့်ပါ:")
 
     elif data.startswith("message_") and not data.startswith("message_topup_"):
         if uid != ADMIN_ID:
             await query.edit_message_text(
-                "âš ï¸ Admin á€žá€¬á€œá€»á€¾á€„á€º á€’á€®á€¡á€›á€¬á€€á€­á€¯á€œá€¯á€•á€ºá€”á€­á€¯á€„á€ºá€•á€«á€žá€Šá€ºá‹")
+                "⚠️ Admin မဟုတ်ပါက ဤလုပ်ဆောင်ချက်ကိုသုံးခွင့်မရှိပါ။")
             return
 
         receipt_id = data.split("_")[1]
         if receipt_id not in db["receipts"]:
-            await query.edit_message_text("âš ï¸ á€•á€¼á€±á€…á€¬á€™á€á€½á€±á€·á€•á€«á‹")
+            await query.edit_message_text("⚠️ ငွေလွှဲသူIDမရှိပါ။")
             return
 
         receipt = db["receipts"][receipt_id]
         user_id = receipt["user_id"]
         context.user_data['admin_messaging'] = {'user_id': user_id}
-        await query.edit_message_text("ðŸ’¬ á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€žá€°á€‘á€¶á€•á€­á€¯á€·á€œá€­á€¯á€žá€±á€¬á€…á€¬á€€á€­á€¯ á€›á€±á€¸á€•á€«:")
+        await query.edit_message_text("💬 သုံးစွဲသူထံမက်ဆေ့ပို့ရန် စာရိုက်ထည့်ပါ:")
 
     elif data.startswith("approve_topup_") or data.startswith("reject_topup_"):
         if uid != ADMIN_ID:
             await query.edit_message_text(
-                "âš ï¸ Admin á€žá€¬á€œá€»á€¾á€„á€º á€’á€®á€¡á€›á€¬á€€á€­á€¯á€œá€¯á€•á€ºá€”á€­á€¯á€„á€ºá€•á€«á€žá€Šá€ºá‹")
+                "⚠️ Admin မဟုတ်ပါက ဤလုပ်ဆောင်ချက်ကိုသုံးခွင့်မရှိပါ။")
             return
 
         action, _, receipt_id = data.split("_")
         if receipt_id not in db["topup_requests"]:
-            await query.edit_message_text("âš ï¸ á€„á€½á€±á€–á€¼á€Šá€·á€ºá€á€±á€¬á€„á€ºá€¸á€†á€­á€¯á€™á€¾á€¯á€™á€á€½á€±á€·á€•á€«á‹")
+            await query.edit_message_text("⚠️ ဘေလင့်ဖြည့်တောင်းခံချက်မရှိပါ။")
             return
 
         request = db["topup_requests"][receipt_id]
@@ -648,30 +667,29 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             save_db(db)
             await context.bot.send_message(
                 user_id,
-                f"âœ… á€„á€½á€±á€–á€¼á€Šá€·á€ºá€™á€¾á€¯ á€œá€€á€ºá€á€¶á€•á€¼á€®á€¸á€•á€«á€•á€¼á€®!\nðŸ’° á€„á€½á€±á€•á€™á€¬á€: {amount} MMK\nðŸ’³ á€œá€€á€ºá€€á€»á€”á€ºá€„á€½á€±: {user['balance']} MMK"
+                f"✅ ဘေလင့်ဖြည့်မှုအောင်မြင်ပါသည်!\n💰 ဖြည့်သွင်းငွေ: {amount} MMK\n💵 ဘေလင့်လက်ကျန်: {user['balance']} MMK"
             )
             await query.edit_message_text(
-                f"âœ… á€„á€½á€±á€–á€¼á€Šá€·á€ºá€™á€¾á€¯ {receipt_id} á€œá€€á€ºá€á€¶á€•á€¼á€®á€¸")
+                f"✅ ဘေလင့်ဖြည့်တောင်းခံချက် {receipt_id} အတည်ပြုပြီးပါပြီ")
         else:
             request["status"] = "rejected"
             save_db(db)
             await context.bot.send_message(user_id,
-                                           "âŒ á€„á€½á€±á€–á€¼á€Šá€·á€ºá€™á€¾á€¯ á€„á€¼á€„á€ºá€¸á€•á€šá€ºá€á€¶á€›á€•á€«á€žá€Šá€ºá‹")
+                                           "❌ ဘေလင့်ဖြည့်တောင်းခံချက်ပယ်ဖျက်ခံရပါသည်။")
             await query.edit_message_text(
-                f"âŒ á€„á€½á€±á€–á€¼á€Šá€·á€ºá€™á€¾á€¯ {receipt_id} á€„á€¼á€„á€ºá€¸á€•á€šá€ºá€•á€¼á€®á€¸")
+                f"❌ ဘေလင့်ဖြည့်တောင်းခံချက် {receipt_id} ပယ်ဖျက်ပြီးပါပြီ")
 
     elif data.startswith("approve_reg_") or data.startswith("reject_reg_"):
         if uid != ADMIN_ID:
             await query.edit_message_text(
-                "âš ï¸ Admin á€žá€¬á€œá€»á€¾á€„á€º á€’á€®á€¡á€›á€¬á€€á€­á€¯á€œá€¯á€•á€ºá€”á€­á€¯á€„á€ºá€•á€«á€žá€Šá€ºá‹")
+                "⚠️ Admin မဟုတ်ပါက ဤလုပ်ဆောင်ချက်ကိုသုံးခွင့်မရှိပါ။")
             return
 
         action, _, user_id = data.split("_")
         user_id = int(user_id)
 
         if user_id not in db["pending_registrations"]:
-            await query.edit_message_text("âš ï¸ á€¡á€€á€±á€¬á€„á€·á€ºá€–á€½á€„á€·á€ºá€á€±á€¬á€„á€ºá€¸á€†á€­á€¯á€™á€¾á€¯á€™á€á€½á€±á€·á€•á€«á‹"
-                                          )
+            await query.edit_message_text("⚠️ အကောင့်ဖွင့်တောင်းခံချက်မရှိပါ။")
             return
 
         if action == "approve":
@@ -686,27 +704,27 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await context.bot.send_message(
                 user_id,
-                "âœ… á€¡á€€á€±á€¬á€„á€·á€ºá€–á€½á€„á€·á€ºá€™á€¾á€¯ á€œá€€á€ºá€á€¶á€•á€¼á€®á€¸á€•á€«á€•á€¼á€®! á€šá€á€¯ bot á€€á€­á€¯ á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€”á€­á€¯á€„á€ºá€•á€«á€•á€¼á€®á‹"
+                "✅ သင့်အကောင့်အတည်ပြုပြီးပါပြီ! ယခုအခါ bot ကိုအသုံးပြုနိုင်ပါပြီ!"
             )
             await query.edit_message_text(
-                f"âœ… á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€žá€° {user_id} á á€¡á€€á€±á€¬á€„á€·á€ºá€–á€½á€„á€·á€ºá€™á€¾á€¯ á€œá€€á€ºá€á€¶á€•á€¼á€®á€¸")
+                f"✅ သုံးစွဲသူ {user_id} ၏ အကောင့်ဖွင့်တောင်းခံချက်အတည်ပြုပြီးပါပြီ")
         else:
             del db["pending_registrations"][user_id]
             save_db(db)
             await context.bot.send_message(
-                user_id, "âŒ á€¡á€€á€±á€¬á€„á€·á€ºá€–á€½á€„á€·á€ºá€™á€¾á€¯ á€„á€¼á€„á€ºá€¸á€•á€šá€ºá€á€¶á€›á€•á€«á€žá€Šá€ºá‹")
+                user_id, "❌ သင့်အကောင့်ဖွင့်တောင်းခံချက်ပယ်ဖျက်ခံရပါသည်။")
             await query.edit_message_text(
-                f"âŒ á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€žá€° {user_id} á á€¡á€€á€±á€¬á€„á€·á€ºá€–á€½á€„á€·á€ºá€™á€¾á€¯ á€„á€¼á€„á€ºá€¸á€•á€šá€ºá€•á€¼á€®á€¸")
+                f"❌ သုံးစွဲသူ {user_id} ၏ အကောင့်ဖွင့်တောင်းခံချက်ပယ်ဖျက်ပြီးပါပြီ")
 
     elif data.startswith("approve_") or data.startswith("reject_"):
         if uid != ADMIN_ID:
             await query.edit_message_text(
-                "âš ï¸ Admin á€žá€¬á€œá€»á€¾á€„á€º á€’á€®á€¡á€›á€¬á€€á€­á€¯á€œá€¯á€•á€ºá€”á€­á€¯á€„á€ºá€•á€«á€žá€Šá€ºá‹")
+                "⚠️ Admin မဟုတ်ပါက ဤလုပ်ဆောင်ချက်ကိုသုံးခွင့်မရှိပါ။")
             return
 
         action, receipt_id = data.split("_")
         if receipt_id not in db["receipts"]:
-            await query.edit_message_text("âš ï¸ á€•á€¼á€±á€…á€¬á€™á€á€½á€±á€·á€•á€«á‹")
+            await query.edit_message_text("⚠️ ငွေလွှဲသူIDမရှိပါ။")
             return
 
         receipt = db["receipts"][receipt_id]
@@ -718,7 +736,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if action == "approve":
             if len(db["stock"][game_type].get(amount, [])) < quantity:
-                await query.edit_message_text("âš ï¸ á€œá€¯á€¶á€œá€±á€¬á€€á€ºá€žá€±á€¬ á€€á€¯á€’á€ºá€™á€›á€¾á€­á€•á€«á‹")
+                await query.edit_message_text("⚠️ လက်ရှိမှာရနိုင်သောအိုင်တီမလုံလောက်ပါ။")
                 return
 
             codes = []
@@ -742,42 +760,41 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             receipt["status"] = "approved"
             save_db(db)
 
-            codes_text = "\n".join([f"ðŸ”‘ {code}" for code in codes])
+            codes_text = "\n".join([f"🔑 {code}" for code in codes])
             await context.bot.send_message(
-                user_id, f"âœ… á€•á€¼á€±á€…á€¬á€”á€²á€·á€á€šá€ºá€šá€°á€™á€¾á€¯ á€œá€€á€ºá€á€¶á€•á€¼á€®á€¸á€•á€«á€•á€¼á€®!\n\n"
-                f"ðŸŽ® {game_name}\n"
-                f"ðŸ’Ž {amount} {unit} x {quantity}\n\n"
-                f"ðŸ”‘ á€€á€¯á€’á€ºá€™á€»á€¬á€¸:\n{codes_text}")
-            await query.edit_message_text(f"âœ… á€•á€¼á€±á€…á€¬ {receipt_id} á€œá€€á€ºá€á€¶á€•á€¼á€®á€¸")
+                user_id, f"✅ ငွေလွှဲသူIDဖြင့်အိုင်တီဝယ်ယူမှုအောင်မြင်ပါသည်!\n\n"
+                f"🎮 {game_name}\n"
+                f"💳 {amount} {unit} x {quantity}\n\n"
+                f"🔑 အိုင်တီကုဒ်များ:\n{codes_text}")
+            await query.edit_message_text(f"✅ ငွေလွှဲသူID {receipt_id} အတည်ပြုပြီးပါပြီ")
         else:
             receipt["status"] = "rejected"
             save_db(db)
             await context.bot.send_message(
-                user_id, "âŒ á€•á€¼á€±á€…á€¬á€”á€²á€·á€á€šá€ºá€šá€°á€™á€¾á€¯ á€„á€¼á€„á€ºá€¸á€•á€šá€ºá€á€¶á€›á€•á€«á€žá€Šá€ºá‹")
-            await query.edit_message_text(f"âŒ á€•á€¼á€±á€…á€¬ {receipt_id} á€„á€¼á€„á€ºá€¸á€•á€šá€ºá€•á€¼á€®á€¸")
+                user_id, "❌ သင့်ငွေလွှဲသူIDဖြင့်အိုင်တီဝယ်ယူမှုပယ်ဖျက်ခံရပါသည်။")
+            await query.edit_message_text(f"❌ ငွေလွှဲသူID {receipt_id} ပယ်ဖျက်ပြီးပါပြီ")
 
     # Admin addstock interactive handlers
     elif data.startswith("addstock_"):
         if uid != ADMIN_ID:
             await query.edit_message_text(
-                "âš ï¸ Admin á€žá€¬á€œá€»á€¾á€„á€º á€’á€®á€¡á€›á€¬á€€á€­á€¯á€œá€¯á€•á€ºá€”á€­á€¯á€„á€ºá€•á€«á€žá€Šá€ºá‹")
+                "⚠️ Admin မဟုတ်ပါက ဤလုပ်ဆောင်ချက်ကိုသုံးခွင့်မရှိပါ။")
             return
 
         game_type = data.split("_")[1]
         context.user_data['addstock_game'] = game_type
 
         keyboard = [[
-            InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="start")
+            InlineKeyboardButton("🏠 မူလစာမျက်နှာသို့", callback_data="start")
         ]]
         game_name = get_game_display_name(game_type)
         unit = "Coin" if "MLBB" in game_type else "UC"
         await query.edit_message_text(
-            f"ðŸŽ® {game_name} á€¡á€á€½á€€á€º á€€á€¯á€’á€ºá€‘á€Šá€·á€ºá€›á€”á€º:\n\n"
-            f"ðŸ“ á€–á€±á€¬á€ºá€™á€á€º: <amount> <price> <code1> <code2> ...\n"
-            f"á€¥á€•á€™á€¬: 1000 2500 CODE123 CODE456\n\n"
-            f"ðŸ’¡ {unit} á€•á€™á€¬á€, á€…á€»á€±á€¸á€”á€¾á€¯á€”á€ºá€¸, á€•á€¼á€®á€¸á€›á€„á€º á€€á€¯á€’á€ºá€™á€»á€¬á€¸á€•á€­á€¯á€·á€•á€«:",
+            f"🎮 {game_name} အိုင်တီထည့်ရန်:\n\n"
+            f"📝 ဖော်မတ်: <amount> <price> <code1> <code2> ...\n"
+            f"ဥပမာ: 1000 2500 CODE123 CODE456\n\n"
+            f"🔢 {unit} ပမာဏ, ဈေးနှုန်း, အိုင်တီကုဒ်များရိုက်ထည့်ပါ:",
             reply_markup=InlineKeyboardMarkup(keyboard))
-
 
 # ---------------- Receipt/Image text handler ----------------
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -793,10 +810,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'topup_photo_message_id'] = update.message.message_id
 
             await update.message.reply_text(
-                "ðŸ“„ á€•á€¼á€±á€…á€¬á€•á€¯á€¶á€›á€›á€¾á€­á€•á€¼á€®á€¸á‹ á€¡á€±á€¬á€€á€ºá€•á€«á€¡á€á€»á€€á€ºá€¡á€œá€€á€ºá€™á€»á€¬á€¸á€•á€­á€¯á€·á€•á€«:\n\n"
-                "ðŸ“ á€–á€±á€¬á€ºá€™á€á€º: <á€•á€¼á€±á€…á€¬ ID (á€”á€±á€¬á€€á€ºá€†á€¯á€¶á€¸ á…á€œá€¯á€¶á€¸ á€žá€­á€¯á€·á€™á€Ÿá€¯á€á€º á†á€œá€¯á€¶á€¸)> <á€„á€½á€±á€•á€™á€¬á€>\n"
-                "á€¥á€•á€™á€¬: 123456 50000\n\n"
-                "âš ï¸ á€žá€á€­á€•á€±á€¸á€á€»á€€á€º: á€•á€¼á€±á€…á€¬ ID á€”á€¾á€„á€·á€º á€•á€™á€¬á€á€™á€¾á€¬á€¸á€›á€±á€¸á€™á€­á€›á€„á€º á€„á€½á€±á€†á€¯á€¶á€¸á€•á€«á€™á€Šá€º")
+                "📄 ငွေလွှဲဓာတ်ပုံလက်ခံရရှိပါပြီ။ ကျေးဇူးပြု၍အောက်ပါအချက်များပို့ပေးပါ:\n\n"
+                "📝 ဖော်မတ်: <ငွေလွှဲသူ ID (ဘေလင့်ဖြည့်ရန်)> <ငွေလွှဲပမာဏ>\n"
+                "ဥပမာ: 123456 50000\n\n"
+                "⚠️ သတိပြုရန်: ငွေလွှဲသူ ID မှားယွင်းပါက ငွေမရရှိနိုင်ပါ")
             return
 
         # Handle receipt purchase photos
@@ -808,9 +825,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['receipt_step'] = 'id'
 
             await update.message.reply_text(
-                "ðŸ“„ á€•á€¼á€±á€…á€¬á€•á€¯á€¶á€›á€›á€¾á€­á€•á€¼á€®á€¸á‹ á€šá€á€¯ á€•á€¼á€±á€…á€¬ ID (á€”á€±á€¬á€€á€ºá€†á€¯á€¶á€¸ á…á€œá€¯á€¶á€¸ á€žá€­á€¯á€·á€™á€Ÿá€¯á€á€º á†á€œá€¯á€¶á€¸) á€›á€±á€¸á€•á€­á€¯á€·á€•á€«:\n\n"
-                "á€¥á€•á€™á€¬: 123456\n\n"
-                "âš ï¸ á€žá€á€­á€•á€±á€¸á€á€»á€€á€º: á€•á€¼á€±á€…á€¬ ID á€™á€¾á€¬á€¸á€›á€±á€¸á€™á€­á€›á€„á€º á€„á€½á€±á€†á€¯á€¶á€¸á€•á€«á€™á€Šá€º")
+                "📄 ငွေလွှဲဓာတ်ပုံလက်ခံရရှိပါပြီ။ ကျေးဇူးပြု၍ ငွေလွှဲသူ ID (ဘေလင့်ဖြည့်ရန်) ရိုက်ထည့်ပေးပါ:\n\n"
+                "ဥပမာ: 123456\n\n"
+                "⚠️ သတိပြုရန်: ငွေလွှဲသူ ID မှားယွင်းပါက အိုင်တီမရနိုင်ပါ")
             return
 
     # Handle text messages
@@ -821,9 +838,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if uid == ADMIN_ID and 'admin_messaging' in context.user_data:
             target_user = context.user_data['admin_messaging']['user_id']
             await context.bot.send_message(target_user,
-                                           f"ðŸ“© Admin á€™á€¾ á€…á€¬:\n{text}")
+                                           f"📨 Admin မှ မက်ဆေ့:\n{text}")
             await update.message.reply_text(
-                f"âœ… á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€žá€° {target_user} á€‘á€¶ á€…á€¬á€•á€­á€¯á€·á€•á€¼á€®á€¸")
+                f"✅ သုံးစွဲသူ {target_user} ထံ မက်ဆေ့ပို့ပြီးပါပြီ")
             del context.user_data['admin_messaging']
             return
 
@@ -835,7 +852,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 if quantity < 1 or quantity > selection['max_quantity']:
                     await update.message.reply_text(
-                        f"âš ï¸ á€€á€¯á€’á€ºá€¡á€›á€±á€¡á€á€½á€€á€ºá€žá€Šá€º 1 á€™á€¾ {selection['max_quantity']} á€¡á€á€½á€„á€ºá€¸á€–á€¼á€…á€ºá€›á€™á€Šá€ºá‹"
+                        f"⚠️ အရေအတွက်သည် 1 မှ {selection['max_quantity']} အတွင်းရှိရပါမည်"
                     )
                     return
 
@@ -849,41 +866,41 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if user["balance"] >= total_price:
                     keyboard.append([
                         InlineKeyboardButton(
-                            f"ðŸ’° á€œá€€á€ºá€€á€»á€”á€ºá€„á€½á€±á€”á€²á€·á€á€šá€ºá€›á€”á€º ({total_price} MMK)",
+                            f"💵 ဘေလင့်ဖြင့်ဝယ်ယူရန် ({total_price} MMK)",
                             callback_data=
                             f"buy_balance_{game_type}_{amount}_{quantity}")
                     ])
                 else:
                     keyboard.append([
-                        InlineKeyboardButton("ðŸ’³ á€„á€½á€±á€–á€¼á€Šá€·á€ºá€›á€”á€º",
+                        InlineKeyboardButton("💰 ဘေလင့်ဖြည့်ရန်",
                                              callback_data="topup")
                     ])
 
                 keyboard.append([
                     InlineKeyboardButton(
-                        "ðŸ“„ á€•á€¼á€±á€…á€¬á€”á€²á€·á€á€šá€ºá€›á€”á€º",
+                        "📄 ငွေလွှဲသူIDဖြင့်ဝယ်ယူရန်",
                         callback_data=
                         f"buy_receipt_{game_type}_{amount}_{quantity}")
                 ])
                 keyboard.append([
                     InlineKeyboardButton(
-                        "ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º",
+                        "🏠 မူလစာမျက်နှာသို့",
                         callback_data=f"amount_{game_type}_{amount}")
                 ])
 
                 game_name = get_game_display_name(game_type)
                 unit = "Coin" if "MLBB" in game_type else "UC"
                 await update.message.reply_text(
-                    f"ðŸŽ® {game_name}\n"
-                    f"ðŸ’Ž {amount} {unit} x {quantity}\n"
-                    f"ðŸ’° á€…á€¯á€…á€¯á€•á€±á€«á€„á€ºá€¸: {total_price} MMK\n"
-                    f"ðŸ’³ á€œá€€á€ºá€€á€»á€”á€ºá€„á€½á€±: {user['balance']} MMK\n\n"
-                    f"ðŸ’³ á€„á€½á€±á€•á€±á€¸á€á€»á€±á€™á€¾á€¯á€”á€Šá€ºá€¸á€œá€™á€ºá€¸á€›á€½á€±á€¸á€•á€«:",
+                    f"🎮 {game_name}\n"
+                    f"💳 {amount} {unit} x {quantity}\n"
+                    f"💵 စုစုပေါင်းဈေးနှုန်း: {total_price} MMK\n"
+                    f"💰 ဘေလင့်လက်ကျန်: {user['balance']} MMK\n\n"
+                    f"💰 ငွေပေးချေမှုနည်းလမ်းရွေးချယ်ရန်:",
                     reply_markup=InlineKeyboardMarkup(keyboard))
                 del context.user_data['selecting_quantity']
                 return
             except ValueError:
-                await update.message.reply_text("âš ï¸ á€€á€»á€±á€¸á€‡á€°á€¸á€•á€¼á€¯á á€‚á€á€”á€ºá€¸á€žá€¬á€›á€±á€¸á€•á€«á‹")
+                await update.message.reply_text("⚠️ နံပါတ်တစ်ခုရိုက်ထည့်ပေးပါ။")
                 return
 
         # Handle admin addstock
@@ -892,7 +909,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parts = text.split()
                 if len(parts) < 3:
                     await update.message.reply_text(
-                        "âš ï¸ á€¡á€”á€Šá€ºá€¸á€†á€¯á€¶á€¸: <amount> <price> <code1>")
+                        "⚠️ ဖော်မတ်: <amount> <price> <code1>")
                     return
 
                 game_type = context.user_data['addstock_game']
@@ -917,16 +934,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 game_name = get_game_display_name(game_type)
                 unit = "Coin" if "MLBB" in game_type else "UC"
                 await update.message.reply_text(
-                    f"âœ… {game_name} {amount} {unit}\n"
-                    f"ðŸ’° á€…á€»á€±á€¸á€”á€¾á€¯á€”á€ºá€¸: {price} MMK\n"
-                    f"ðŸ“¦ á€€á€¯á€’á€º: {len(codes)} á€á€¯ á€‘á€Šá€·á€ºá€•á€¼á€®á€¸")
+                    f"✅ {game_name} {amount} {unit}\n"
+                    f"💵 ဈေးနှုန်း: {price} MMK\n"
+                    f"📦 အိုင်တီ: {len(codes)} ခု ထည့်သွင်းပြီးပါပြီ")
                 del context.user_data['addstock_game']
                 return
             except ValueError:
-                await update.message.reply_text("âš ï¸ á€…á€»á€±á€¸á€”á€¾á€¯á€”á€ºá€¸á€™á€¾á€¬á€¸á€šá€½á€„á€ºá€¸á€•á€«á€žá€Šá€ºá‹")
+                await update.message.reply_text("⚠️ ဈေးနှုန်းကိန်းဂဏန်းမဟုတ်ပါ။")
                 return
             except:
-                await update.message.reply_text("âš ï¸ á€–á€±á€¬á€ºá€™á€á€ºá€™á€¾á€¬á€¸á€šá€½á€„á€ºá€¸á€•á€«á€žá€Šá€ºá‹")
+                await update.message.reply_text("⚠️ ဖော်မတ်မှားယွင်းနေပါသည်။")
                 return
 
         # Handle topup with receipt ID and amount
@@ -935,7 +952,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parts = text.split()
                 if len(parts) != 2:
                     await update.message.reply_text(
-                        "âš ï¸ á€–á€±á€¬á€ºá€™á€á€º: <á€•á€¼á€±á€…á€¬ ID> <á€„á€½á€±á€•á€™á€¬á€>")
+                        "⚠️ ဖော်မတ်: <ငွေလွှဲသူ ID> <ငွေလွှဲပမာဏ>")
                     return
 
                 receipt_id = parts[0]
@@ -943,12 +960,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 if not validate_receipt_id(receipt_id):
                     await update.message.reply_text(
-                        "âš ï¸ á€•á€¼á€±á€…á€¬ ID á€žá€Šá€º á…-á†á€œá€¯á€¶á€¸ á€‚á€á€”á€ºá€¸á€–á€¼á€…á€ºá€›á€™á€Šá€ºá‹")
+                        "⚠️ ငွေလွှဲသူ ID သည် ၅-၆ လုံးဂဏန်းဖြစ်ရပါမည်")
                     return
 
                 if amount < 1000:
                     await update.message.reply_text(
-                        "âš ï¸ á€„á€½á€±á€•á€™á€¬á€á€™á€¾á€¬á€¸á€šá€½á€„á€ºá€¸á€•á€«á€žá€Šá€ºá‹ á€¡á€”á€Šá€ºá€¸á€†á€¯á€¶á€¸ áá€á€á€ MMK á€–á€¼á€…á€ºá€›á€™á€Šá€ºá‹"
+                        "⚠️ ငွေလွှဲပမာဏသည် 1000 MMK ထက်မနည်းရပါ"
                     )
                     return
 
@@ -965,13 +982,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 keyboard = [[
                     InlineKeyboardButton(
-                        "âœ… á€œá€€á€ºá€á€¶á€›á€”á€º",
+                        "✅ အတည်ပြုရန်",
                         callback_data=f"approve_topup_{receipt_id}"),
                     InlineKeyboardButton(
-                        "ðŸ’¬ á€…á€¬á€•á€­á€¯á€·á€›á€”á€º",
+                        "💬 မက်ဆေ့ပို့ရန်",
                         callback_data=f"message_topup_{receipt_id}"),
                     InlineKeyboardButton(
-                        "âŒ á€„á€¼á€„á€ºá€¸á€•á€šá€ºá€›á€”á€º",
+                        "❌ ပယ်ဖျက်ရန်",
                         callback_data=f"reject_topup_{receipt_id}")
                 ]]
 
@@ -982,14 +999,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 await context.bot.send_message(
                     chat_id=ADMIN_ID,
-                    text=f"ðŸ“¥ á€„á€½á€±á€–á€¼á€Šá€·á€ºá€á€±á€¬á€„á€ºá€¸á€†á€­á€¯á€™á€¾á€¯:\n"
-                    f"ðŸ‘¤ á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€žá€°: {uid}\n"
-                    f"ðŸ’³ á€”á€Šá€ºá€¸á€œá€™á€ºá€¸: {payment_method}\n"
-                    f"ðŸ“„ á€•á€¼á€±á€…á€¬ ID: {receipt_id}\n"
-                    f"ðŸ’° á€„á€½á€±á€•á€™á€¬á€: {amount} MMK",
+                    text=f"📥 ဘေလင့်ဖြည့်တောင်းခံချက်အသစ်:\n"
+                    f"🆔 သုံးစွဲသူ: {uid}\n"
+                    f"💰 နည်းလမ်း: {payment_method}\n"
+                    f"📄 ငွေလွှဲသူ ID: {receipt_id}\n"
+                    f"💵 ပမာဏ: {amount} MMK",
                     reply_markup=InlineKeyboardMarkup(keyboard))
 
-                await update.message.reply_text("â³ Admin á€™á€¾ á€…á€…á€ºá€†á€±á€¸á€”á€±á€•á€«á€žá€Šá€º...")
+                await update.message.reply_text("⏳ Admin ထံတောင်းခံချက်ပို့ပြီးပါပြီ...")
 
                 # Clear user data
                 del context.user_data['topup_method']
@@ -997,10 +1014,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 del context.user_data['topup_photo_message_id']
                 return
             except ValueError:
-                await update.message.reply_text("âš ï¸ á€„á€½á€±á€•á€™á€¬á€á€™á€¾á€¬á€¸á€šá€½á€„á€ºá€¸á€•á€«á€žá€Šá€ºá‹")
+                await update.message.reply_text("⚠️ ငွေလွှဲပမာဏကိန်းဂဏန်းမဟုတ်ပါ။")
                 return
             except:
-                await update.message.reply_text("âš ï¸ á€–á€±á€¬á€ºá€™á€á€ºá€™á€¾á€¬á€¸á€šá€½á€„á€ºá€¸á€•á€«á€žá€Šá€ºá‹")
+                await update.message.reply_text("⚠️ ဖော်မတ်မှားယွင်းနေပါသည်။")
                 return
 
         # Handle receipt purchase with receipt ID
@@ -1008,7 +1025,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'receipt_step') == 'id':
             if not validate_receipt_id(text):
                 await update.message.reply_text(
-                    "âš ï¸ á€•á€¼á€±á€…á€¬ ID á€žá€Šá€º á…-á†á€œá€¯á€¶á€¸ á€‚á€á€”á€ºá€¸á€–á€¼á€…á€ºá€›á€™á€Šá€ºá‹")
+                    "⚠️ ငွေလွှဲသူ ID သည် ၅-၆ လုံးဂဏန်းဖြစ်ရပါမည်")
                 return
 
             game_type = context.user_data['buying_game']
@@ -1028,11 +1045,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             game_name = get_game_display_name(game_type)
             unit = "Coin" if "MLBB" in game_type else "UC"
             keyboard = [[
-                InlineKeyboardButton("âœ… á€œá€€á€ºá€á€¶á€›á€”á€º",
+                InlineKeyboardButton("✅ အတည်ပြုရန်",
                                      callback_data=f"approve_{text}"),
-                InlineKeyboardButton("ðŸ’¬ á€…á€¬á€•á€­á€¯á€·á€›á€”á€º",
+                InlineKeyboardButton("💬 မက်ဆေ့ပို့ရန်",
                                      callback_data=f"message_{text}"),
-                InlineKeyboardButton("âŒ á€„á€¼á€„á€ºá€¸á€•á€šá€ºá€›á€”á€º",
+                InlineKeyboardButton("❌ ပယ်ဖျက်ရန်",
                                      callback_data=f"reject_{text}")
             ]]
 
@@ -1043,13 +1060,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await context.bot.send_message(
                 chat_id=ADMIN_ID,
-                text=f"ðŸ“¥ á€€á€¯á€’á€ºá€á€šá€ºá€šá€°á€™á€¾á€¯:\n"
-                f"ðŸ‘¤ á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€žá€°: {uid}\n"
-                f"ðŸŽ® á€‚á€­á€™á€ºá€¸: {game_name}\n"
-                f"ðŸ’Ž {amount} {unit} x {quantity}\n"
-                f"ðŸ“„ á€•á€¼á€±á€…á€¬ ID: {text}",
+                text=f"📥 အိုင်တီဝယ်ယူတောင်းခံချက်အသစ်:\n"
+                f"🆔 သုံးစွဲသူ: {uid}\n"
+                f"🎮 ဂိမ်း: {game_name}\n"
+                f"💳 {amount} {unit} x {quantity}\n"
+                f"📄 ငွေလွှဲသူ ID: {text}",
                 reply_markup=InlineKeyboardMarkup(keyboard))
-            await update.message.reply_text("â³ Admin á€™á€¾ á€…á€…á€ºá€†á€±á€¸á€”á€±á€•á€«á€žá€Šá€º...")
+            await update.message.reply_text("⏳ Admin ထံတောင်းခံချက်ပို့ပြီးပါပြီ...")
 
             # Clear user data
             del context.user_data['buying_game']
@@ -1059,7 +1076,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             del context.user_data['receipt_photo_message_id']
             del context.user_data['receipt_step']
             return
-
 
 # ---------------- Admin Commands ----------------
 async def setbalance(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1073,11 +1089,10 @@ async def setbalance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user["balance"] = amount
         save_db(db)
         await update.message.reply_text(
-            f"âœ… á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€žá€° {uid} á á€œá€€á€ºá€€á€»á€”á€ºá€„á€½á€±á€€á€­á€¯ {amount} MMK á€žá€á€ºá€™á€¾á€á€ºá€•á€¼á€®á€¸")
+            f"✅ သုံးစွဲသူ {uid} ၏ ဘေလင့်လက်ကျန်ကို {amount} MMK သတ်မှတ်ပြီးပါပြီ")
     except:
         await update.message.reply_text(
-            "á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€”á€Šá€ºá€¸: /setbalance <user_id> <amount>")
-
+            "အသုံးပြုနည်း: /setbalance <user_id> <amount>")
 
 async def addstock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -1085,21 +1100,20 @@ async def addstock(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Interactive version
     keyboard = [[
-        InlineKeyboardButton("ðŸŽ® Mobile Legends (Bal)",
+        InlineKeyboardButton("🎮 Mobile Legends (Bal)",
                              callback_data="addstock_MLBBbal")
     ],
                 [
-                    InlineKeyboardButton("ðŸŽ® Mobile Legends (PH)",
+                    InlineKeyboardButton("🎮 Mobile Legends (PH)",
                                          callback_data="addstock_MLBBph")
                 ],
                 [
-                    InlineKeyboardButton("ðŸŽ® PUPG Mobile",
+                    InlineKeyboardButton("🎮 PUPG Mobile",
                                          callback_data="addstock_PUPG")
                 ]]
     await update.message.reply_text(
-        "ðŸŽ® á€‚á€­á€™á€ºá€¸á€¡á€™á€»á€­á€¯á€¸á€¡á€…á€¬á€¸á€›á€½á€±á€¸á€•á€«:",
+        "🎮 ဂိမ်းရွေးချယ်ရန်:",
         reply_markup=InlineKeyboardMarkup(keyboard))
-
 
 async def delstock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -1107,7 +1121,7 @@ async def delstock(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if len(context.args) < 3:
         await update.message.reply_text(
-            "á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€”á€Šá€ºá€¸: /delstock <MLBBbal/MLBBph/PUPG> <amount> <code>")
+            "အသုံးပြုနည်း: /delstock <MLBBbal/MLBBph/PUPG> <amount> <code>")
         return
 
     try:
@@ -1117,12 +1131,12 @@ async def delstock(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if game_type not in ["MLBBbal", "MLBBph", "PUPG"]:
             await update.message.reply_text(
-                "á€‚á€­á€™á€ºá€¸á€¡á€™á€»á€­á€¯á€¸á€¡á€…á€¬á€¸: MLBBbal, MLBBph, á€žá€­á€¯á€·á€™á€Ÿá€¯á€á€º PUPG")
+                "ဂိမ်းအမျိုးအစား: MLBBbal, MLBBph, သို့မဟုတ် PUPG")
             return
 
         if game_type not in db["stock"] or amount not in db["stock"][game_type]:
             await update.message.reply_text(
-                "âš ï¸ á€’á€®á€‚á€­á€™á€ºá€¸á€¡á€™á€»á€­á€¯á€¸á€¡á€…á€¬á€¸ á€žá€­á€¯á€·á€™á€Ÿá€¯á€á€º á€•á€™á€¬á€á€™á€›á€¾á€­á€•á€«á‹")
+                "⚠️ ဤဂိမ်းနှင့်ပမာဏအတွက်အိုင်တီမရှိပါ။")
             return
 
         if code_to_delete in db["stock"][game_type][amount]:
@@ -1132,21 +1146,20 @@ async def delstock(update: Update, context: ContextTypes.DEFAULT_TYPE):
             game_name = get_game_display_name(game_type)
             unit = "Coin" if "MLBB" in game_type else "UC"
             await update.message.reply_text(
-                f"âœ… {game_name} {amount} {unit} á€™á€¾ á€€á€¯á€’á€º {code_to_delete} á€–á€»á€€á€ºá€•á€¼á€®á€¸"
+                f"✅ {game_name} {amount} {unit} ၏ အိုင်တီ {code_to_delete} ဖျက်ပြီးပါပြီ"
             )
         else:
-            await update.message.reply_text("âš ï¸ á€’á€®á€€á€¯á€’á€ºá€™á€á€½á€±á€·á€•á€«á‹")
+            await update.message.reply_text("⚠️ ဤအိုင်တီမရှိပါ။")
     except:
         await update.message.reply_text(
-            "á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€”á€Šá€ºá€¸: /delstock <MLBBbal/MLBBph/PUPG> <amount> <code>")
-
+            "အသုံးပြုနည်း: /delstock <MLBBbal/MLBBph/PUPG> <amount> <code>")
 
 async def setprice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     if len(context.args) < 3:
         await update.message.reply_text(
-            "á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€”á€Šá€ºá€¸: /setprice <MLBBbal/MLBBph/PUPG> <amount> <price>")
+            "အသုံးပြုနည်း: /setprice <MLBBbal/MLBBph/PUPG> <amount> <price>")
         return
 
     try:
@@ -1156,7 +1169,7 @@ async def setprice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if game_type not in ["MLBBbal", "MLBBph", "PUPG"]:
             await update.message.reply_text(
-                "á€‚á€­á€™á€ºá€¸á€¡á€™á€»á€­á€¯á€¸á€¡á€…á€¬á€¸: MLBBbal, MLBBph, á€žá€­á€¯á€·á€™á€Ÿá€¯á€á€º PUPG")
+                "ဂိမ်းအမျိုးအစား: MLBBbal, MLBBph, သို့မဟုတ် PUPG")
             return
 
         if game_type not in db["prices"]:
@@ -1168,12 +1181,11 @@ async def setprice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         game_name = get_game_display_name(game_type)
         unit = "Coin" if "MLBB" in game_type else "UC"
         await update.message.reply_text(
-            f"âœ… {game_name} {amount} {unit} á á€…á€»á€±á€¸á€”á€¾á€¯á€”á€ºá€¸á€€á€­á€¯ {price} MMK á€¡á€–á€¼á€…á€ºá€žá€á€ºá€™á€¾á€á€ºá€•á€¼á€®á€¸"
+            f"✅ {game_name} {amount} {unit} ၏ ဈေးနှုန်းကို {price} MMK သတ်မှတ်ပြီးပါပြီ"
         )
     except:
         await update.message.reply_text(
-            "á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€”á€Šá€ºá€¸: /setprice <MLBBbal/MLBBph/PUPG> <amount> <price>")
-
+            "အသုံးပြုနည်း: /setprice <MLBBbal/MLBBph/PUPG> <amount> <price>")
 
 async def setpayment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -1185,18 +1197,17 @@ async def setpayment(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if method not in ["Wave", "Kpay"]:
             await update.message.reply_text(
-                "á€„á€½á€±á€•á€±á€¸á€á€»á€±á€™á€¾á€¯á€”á€Šá€ºá€¸á€œá€™á€ºá€¸: Wave á€žá€­á€¯á€·á€™á€Ÿá€¯á€á€º KPay")
+                "ငွေလွှဲနည်းလမ်း: Wave သို့မဟုတ် KPay")
             return
 
         db["payment"][method] = {"phone": phone, "name": name}
         save_db(db)
         await update.message.reply_text(
-            f"âœ… {method} á€•á€±á€¸á€á€»á€±á€™á€¾á€¯á€¡á€á€»á€€á€ºá€¡á€œá€€á€º á€•á€¼á€±á€¬á€„á€ºá€¸á€œá€²á€•á€¼á€®á€¸\nðŸ“± á€–á€¯á€”á€ºá€¸: {phone}\nðŸ‘¤ á€¡á€™á€Šá€º: {name}"
+            f"✅ {method} ငွေလွှဲအချက်အလက်များသတ်မှတ်ပြီးပါပြီ\n📱 ဖုန်းနံပါတ်: {phone}\n👤 အမည်: {name}"
         )
     except:
         await update.message.reply_text(
-            "á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€”á€Šá€ºá€¸: /setpayment <Wave/KPay> <phone> <name>")
-
+            "အသုံးပြုနည်း: /setpayment <Wave/KPay> <phone> <name>")
 
 async def viewhistory(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -1206,7 +1217,7 @@ async def viewhistory(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = get_user(uid)
         if not user["history"]:
             await update.message.reply_text(
-                f"á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€žá€° {uid} á á€™á€¾á€á€ºá€á€™á€ºá€¸á€™á€›á€¾á€­á€•á€«")
+                f"သုံးစွဲသူ {uid} ၏ မှတ်တမ်းမရှိပါ။")
             return
 
         history_text = ""
@@ -1214,10 +1225,9 @@ async def viewhistory(update: Update, context: ContextTypes.DEFAULT_TYPE):
             history_text += f"{i}. {h}\n"
 
         await update.message.reply_text(
-            f"ðŸ“œ á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€žá€° {uid} á á€™á€¾á€á€ºá€á€™á€ºá€¸:\n{history_text}")
+            f"📜 သုံးစွဲသူ {uid} ၏ မှတ်တမ်း:\n{history_text}")
     except:
-        await update.message.reply_text("á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€”á€Šá€ºá€¸: /viewhistory <user_id>")
-
+        await update.message.reply_text("အသုံးပြုနည်း: /viewhistory <user_id>")
 
 async def admhelp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -1248,59 +1258,74 @@ async def admhelp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pending_registrations = len(db.get("pending_registrations", {}))
 
     help_text = f"""
-ðŸ”§ Admin Commands:
+🔧 Admin Commands:
 
-/setbalance <user_id> <amount> - á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€žá€°á€œá€€á€ºá€€á€»á€”á€ºá€„á€½á€±á€žá€á€ºá€™á€¾á€á€ºá€›á€”á€º
-/addstock - á€€á€¯á€’á€ºá€™á€»á€¬á€¸á€‘á€Šá€·á€ºá€›á€”á€º (á€¡á€•á€¼á€”á€ºá€¡á€œá€¾á€”á€º)
-/delstock <MLBBbal/MLBBph/PUPG> <amount> <code> - á€€á€¯á€’á€ºá€–á€»á€€á€ºá€›á€”á€º
-/setprice <MLBBbal/MLBBph/PUPG> <amount> <price> - á€…á€»á€±á€¸á€”á€¾á€¯á€”á€ºá€¸á€žá€á€ºá€™á€¾á€á€ºá€›á€”á€º
-/setpayment <Wave/Kpay> <phone> <name> - á€•á€±á€¸á€á€»á€±á€™á€¾á€¯á€¡á€á€»á€€á€ºá€¡á€œá€€á€ºá€•á€¼á€±á€¬á€„á€ºá€¸á€›á€”á€º
-/viewhistory <user_id> - á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€žá€°á€™á€¾á€á€ºá€á€™á€ºá€¸á€€á€¼á€Šá€·á€ºá€›á€”á€º
-/admhelp - á€’á€®á€¡á€€á€°á€¡á€Šá€®á€…á€¬á€›á€„á€ºá€¸
+/setbalance <user_id> <amount> - သုံးစွဲသူဘေလင့်သတ်မှတ်ရန်
+/addstock - အိုင်တီထည့်ရန် (အပြန်အလှန်စနစ်)
+/delstock <MLBBbal/MLBBph/PUPG> <amount> <code> - အိုင်တီဖျက်ရန်
+/setprice <MLBBbal/MLBBph/PUPG> <amount> <price> - ဈေးနှုန်းသတ်မှတ်ရန်
+/setpayment <Wave/Kpay> <phone> <name> - ငွေလွှဲအချက်အလက်သတ်မှတ်ရန်
+/viewhistory <user_id> - သုံးစွဲသူမှတ်တမ်းကြည့်ရန်
+/admhelp - ဤအကူအညီစာမျက်နှာပြရန်
 
-ðŸ“Š á€œá€€á€ºá€›á€¾á€­á€¡á€á€¼á€±á€¡á€”á€±:
-ðŸŽ® MLBB Bal á€€á€¯á€’á€º: {mlbbbal_count}
-ðŸŽ® MLBB PH á€€á€¯á€’á€º: {mlbbph_count}
-ðŸŽ® PUPG á€€á€¯á€’á€º: {pupg_count}
-ðŸ‘¥ á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€žá€°: {len(db["users"])}
-ðŸ“¦ á€¡á€±á€¬á€ºá€’á€«á€…á€¯á€…á€¯á€•á€±á€«á€„á€ºá€¸: {total_orders}
-ðŸ’° á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€žá€°á€œá€€á€ºá€€á€»á€”á€ºá€„á€½á€±á€…á€¯á€…á€¯á€•á€±á€«á€„á€ºá€¸: {total_user_balance:,} MMK
-ðŸ’µ á€›á€±á€¬á€„á€ºá€¸á€›á€„á€½á€±á€…á€¯á€…á€¯á€•á€±á€«á€„á€ºá€¸: {db.get('sales_total', 0):,} MMK
-â³ á€„á€¶á€·á€›á€±á€¸á€•á€¼á€±á€…á€¬: {pending_receipts}
-â³ á€„á€¶á€·á€›á€±á€¸á€„á€½á€±á€–á€¼á€Šá€·á€º: {pending_topups}
-â³ á€„á€¶á€·á€›á€±á€¸á€¡á€€á€±á€¬á€„á€·á€ºá€–á€½á€„á€·á€º: {pending_registrations}
+📊 စာရင်းဇယား:
+🎮 MLBB Bal အိုင်တီ: {mlbbbal_count}
+🎮 MLBB PH အိုင်တီ: {mlbbph_count}
+🎮 PUPG အိုင်တီ: {pupg_count}
+👥 သုံးစွဲသူ: {len(db["users"])}
+📦 စုစုပေါင်းအမှာစာ: {total_orders}
+💵 သုံးစွဲသူဘေလင့်စုစုပေါင်း: {total_user_balance:,} MMK
+💰 စုစုပေါင်းရောင်းအား: {db.get('sales_total', 0):,} MMK
+⏳ စောင့်ဆိုင်းငွေလွှဲသူID: {pending_receipts}
+⏳ စောင့်ဆိုင်းဘေလင့်ဖြည့်: {pending_topups}
+⏳ စောင့်ဆိုင်းအကောင့်ဖွင့်: {pending_registrations}
 
-ðŸ’¡ á€¥á€•á€™á€¬á€™á€»á€¬á€¸:
+📝 ဥပမာများ:
 /setprice MLBBbal 1000 2500
 /setprice PUPG 60 1500
 /delstock MLBBbal 1000 CODE123
 /setpayment Kpay 09123456789 John Doe
 
-ðŸ”§ á€¡á€„á€ºá€¹á€‚á€«á€›á€•á€ºá€™á€»á€¬á€¸:
-â€¢ á€¡á€€á€±á€¬á€„á€·á€ºá€–á€½á€„á€·á€ºá€™á€¾á€¯ Admin á€œá€€á€ºá€á€¶á€™á€¾á€¯á€œá€­á€¯á€¡á€•á€ºá€žá€Šá€º
-â€¢ á€€á€¯á€’á€ºá€¡á€›á€±á€¡á€á€½á€€á€ºá€›á€½á€±á€¸á€á€»á€šá€ºá€™á€¾á€¯ á€…á€¬á€•á€­á€¯á€·á€á€¼á€„á€ºá€¸á€–á€¼á€„á€·á€º
-â€¢ Admin á€€á€­á€¯ á€…á€¬á€•á€­á€¯á€·á€”á€­á€¯á€„á€ºá€žá€Šá€º (ðŸ’¬ á€á€œá€¯á€á€º)
+🔧 စီမံခန့်ခွဲမှုလမ်းညွှန်ချက်များ:
+• သုံးစွဲသူအကောင့်များကို Admin မှအတည်ပြုပေးရပါမည်
+• အိုင်တီပမာဏများကိုဂရုတစိုက်ထည့်သွင်းပါ
+• Admin မှသုံးစွဲသူများထံမက်ဆေ့ပို့နိုင်သည် (💬 ခလုတ်)
     """
 
     await update.message.reply_text(help_text)
 
-
-# ---------------- Main ----------------
+# ---------------- Main Application ----------------
 def main():
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("setbalance", setbalance))
-    app.add_handler(CommandHandler("addstock", addstock))
-    app.add_handler(CommandHandler("delstock", delstock))
-    app.add_handler(CommandHandler("setprice", setprice))
-    app.add_handler(CommandHandler("setpayment", setpayment))
-    app.add_handler(CommandHandler("viewhistory", viewhistory))
-    app.add_handler(CommandHandler("admhelp", admhelp))
-    app.add_handler(CallbackQueryHandler(callback_handler))
-    app.add_handler(
-        MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
-    app.run_polling()
-
+    # Check required environment variables
+    if not BOT_TOKEN:
+        print("Error: BOT_TOKEN environment variable is required!")
+        return
+    
+    try:
+        # Use Application builder with simpler configuration
+        application = Application.builder().token(BOT_TOKEN).build()
+        
+        # Add handlers
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("setbalance", setbalance))
+        application.add_handler(CommandHandler("addstock", addstock))
+        application.add_handler(CommandHandler("delstock", delstock))
+        application.add_handler(CommandHandler("setprice", setprice))
+        application.add_handler(CommandHandler("setpayment", setpayment))
+        application.add_handler(CommandHandler("viewhistory", viewhistory))
+        application.add_handler(CommandHandler("admhelp", admhelp))
+        application.add_handler(CallbackQueryHandler(callback_handler))
+        application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
+        
+        print("Bot is starting...")
+        
+        # Simple polling without extra parameters that might cause issues
+        application.run_polling()
+        
+    except Exception as e:
+        print(f"Error starting bot: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     main()
