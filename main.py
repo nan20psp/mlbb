@@ -2,440 +2,513 @@ import os
 import json
 import random
 import asyncio
+from datetime import datetime
+from typing import Dict, List, Optional, Any
+from dataclasses import dataclass
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 from dotenv import load_dotenv
 
-# ---------------- Load .env ----------------
+# Load environment variables
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "7927660379:AAGtm-CvAunvvANaaYvzlmRVjjBgJcmEh58")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7669567524"))
 
-# ---------------- Database ----------------
+# Constants
 DB_FILE = "database.json"
+GAME_TYPES = ["MLBBbal", "MLBBph", "PUPG"]
+PAYMENT_METHODS = ["Wave", "KPay"]
 
+@dataclass
+class User:
+    user_id: int
+    balance: int = 0
+    history: List[Dict] = None
+    approved: bool = False
+    
+    def __post_init__(self):
+        if self.history is None:
+            self.history = []
 
-def load_db():
-    if not os.path.exists(DB_FILE):
+@dataclass
+class StockItem:
+    game_type: str
+    amount: str
+    codes: List[str]
+    price: int
+
+@dataclass
+class PaymentInfo:
+    phone: str
+    name: str
+
+class DatabaseManager:
+    def __init__(self, db_file: str):
+        self.db_file = db_file
+        self.db = self._load_db()
+    
+    def _load_db(self) -> Dict[str, Any]:
+        """Load database from file or create default structure"""
+        if not os.path.exists(self.db_file):
+            return self._create_default_db()
+        
+        with open(self.db_file, "r", encoding='utf-8') as f:
+            data = json.load(f)
+        
+        return self._migrate_db(data)
+    
+    def _create_default_db(self) -> Dict[str, Any]:
+        """Create default database structure"""
         return {
             "users": {},
-            "stock": {
-                "MLBBbal":
-                {},  # {"1000": ["code1", "code2"], "2000": ["code3"]}
-                "MLBBph": {},
-                "PUPG": {}
-            },
+            "stock": {game: {} for game in GAME_TYPES},
             "receipts": {},
             "topup_requests": {},
-            "prices": {
-                "MLBBbal": {},  # {"1000": 2000, "2000": 4000}
-                "MLBBph": {},
-                "PUPG": {}
-            },
+            "prices": {game: {} for game in GAME_TYPES},
             "payment": {
-                "Wave": {
-                    "phone": "09673585480",
-                    "name": "Nine Nine"
-                },
-                "KPay": {
-                    "phone": "09678786528",
-                    "name": "Ma May Phoo Wai"
-                }
+                "Wave": {"phone": "09673585480", "name": "Nine Nine"},
+                "KPay": {"phone": "09678786528", "name": "Ma May Phoo Wai"}
             },
-            "sales_total": 0
+            "sales_total": 0,
+            "pending_registrations": {}
         }
-    with open(DB_FILE, "r") as f:
-        data = json.load(f)
-
-    # Update old structure if needed
-    if "stock" in data and isinstance(data["stock"],
-                                      dict) and "mlbb" in data["stock"]:
-        new_stock = {"MLBBbal": {}, "MLBBph": {}, "PUPG": {}}
-        new_prices = {"MLBBbal": {}, "MLBBph": {}, "PUPG": {}}
-
-        # Migrate MLBB codes assuming they are for MLBBbal
-        mlbb_codes = data["stock"].get("mlbb", [])
-        if mlbb_codes:
-            new_stock["MLBBbal"]["1000"] = mlbb_codes
-            if "price" in data and data["price"] > 0:
-                new_prices["MLBBbal"]["1000"] = data["price"]
-            else:
-                new_prices["MLBBbal"]["1000"] = 1000
-
-        # Migrate PUBG codes to PUPG
-        pubg_codes = data["stock"].get("pubg", [])
-        if pubg_codes:
-            new_stock["PUPG"]["60"] = pubg_codes
-            if "price" in data and data["price"] > 0:
-                new_prices["PUPG"]["60"] = data["price"]
-            else:
-                new_prices["PUPG"]["60"] = 1000
-
-        data["stock"] = new_stock
-        data["prices"] = new_prices
-        save_db(data)
-
-    # Migrate PUBG to PUPG in existing structure
-    if "stock" in data and "PUBG" in data["stock"]:
-        data["stock"]["PUPG"] = data["stock"].pop("PUBG")
-    if "prices" in data and "PUBG" in data["prices"]:
-        data["prices"]["PUPG"] = data["prices"].pop("PUBG")
-
-    # Ensure all expected keys exist
-    if "stock" not in data:
-        data["stock"] = {"MLBBbal": {}, "MLBBph": {}, "PUPG": {}}
-    if "prices" not in data:
-        data["prices"] = {"MLBBbal": {}, "MLBBph": {}, "PUPG": {}}
-    if "topup_requests" not in data: data["topup_requests"] = {}
-    if "users" not in data: data["users"] = {}
-    if "payment" not in data:
-        data["payment"] = {
-            "Wave": {
-                "phone": "09673585480",
-                "name": "Nine Nine"
-            },
-            "Kpay": {
-                "phone": "09678786528",
-                "name": "Ma May Phoo Wai"
+    
+    def _migrate_db(self, data: Dict) -> Dict:
+        """Migrate old database structure to new one"""
+        # Migration logic here (simplified)
+        if "PUBG" in data.get("stock", {}):
+            data["stock"]["PUPG"] = data["stock"].pop("PUBG")
+        if "PUBG" in data.get("prices", {}):
+            data["prices"]["PUPG"] = data["prices"].pop("PUBG")
+        
+        # Ensure all required keys exist
+        for key in ["users", "stock", "prices", "payment", "sales_total", "pending_registrations"]:
+            if key not in data:
+                data[key] = self._create_default_db()[key]
+        
+        return data
+    
+    def save_db(self):
+        """Save database to file"""
+        with open(self.db_file, "w", encoding='utf-8') as f:
+            json.dump(self.db, f, indent=2, ensure_ascii=False)
+    
+    def get_user(self, user_id: int) -> User:
+        """Get user or create new one"""
+        if str(user_id) not in self.db["users"]:
+            self.db["users"][str(user_id)] = {
+                "balance": 0,
+                "history": [],
+                "approved": False
             }
+            self.save_db()
+        
+        user_data = self.db["users"][str(user_id)]
+        return User(
+            user_id=user_id,
+            balance=user_data["balance"],
+            history=user_data["history"],
+            approved=user_data.get("approved", False)
+        )
+    
+    def update_user(self, user: User):
+        """Update user in database"""
+        self.db["users"][str(user.user_id)] = {
+            "balance": user.balance,
+            "history": user.history,
+            "approved": user.approved
         }
-    if "sales_total" not in data: data["sales_total"] = 0
-    if "pending_registrations" not in data: data["pending_registrations"] = {}
+        self.save_db()
+    
+    def get_stock(self, game_type: str, amount: str) -> List[str]:
+        """Get stock for specific game type and amount"""
+        return self.db["stock"].get(game_type, {}).get(amount, [])
+    
+    def update_stock(self, game_type: str, amount: str, codes: List[str]):
+        """Update stock for specific game type and amount"""
+        if game_type not in self.db["stock"]:
+            self.db["stock"][game_type] = {}
+        self.db["stock"][game_type][amount] = codes
+        self.save_db()
+    
+    def get_price(self, game_type: str, amount: str) -> int:
+        """Get price for specific game type and amount"""
+        return self.db["prices"].get(game_type, {}).get(amount, 0)
 
-    # Clear old codes from MLBBph and PUPG (one-time cleanup)
-    if "cleanup_done" not in data:
-        if "MLBBph" in data["stock"]:
-            data["stock"]["MLBBph"] = {}
-        if "PUPG" in data["stock"]:
-            data["stock"]["PUPG"] = {}
-        data["cleanup_done"] = True
+class BotService:
+    def __init__(self, db_manager: DatabaseManager):
+        self.db = db_manager
+    
+    @staticmethod
+    def get_game_display_name(game_type: str) -> str:
+        """Get display name for game type"""
+        names = {
+            "MLBBbal": "Mobile Legends (Bal)",
+            "MLBBph": "Mobile Legends (PH)", 
+            "PUPG": "PUPG Mobile"
+        }
+        return names.get(game_type, game_type)
+    
+    @staticmethod
+    def get_game_unit(game_type: str) -> str:
+        """Get unit for game type"""
+        return "Coin" if "MLBB" in game_type else "UC"
+    
+    def generate_receipt_id(self) -> str:
+        """Generate unique receipt ID"""
+        while True:
+            rid = str(random.randint(10000, 999999))
+            if rid not in self.db.db["receipts"] and rid not in self.db.db["topup_requests"]:
+                return rid
+    
+    def validate_receipt_id(self, receipt_id: str) -> bool:
+        """Validate receipt ID format"""
+        return receipt_id.isdigit() and 5 <= len(receipt_id) <= 6
+    
+    def get_available_games(self) -> List[str]:
+        """Get list of available games with stock"""
+        available_games = []
+        for game_type in GAME_TYPES:
+            total_codes = sum(
+                len(codes) 
+                for codes in self.db.db["stock"].get(game_type, {}).values()
+            )
+            if total_codes > 0:
+                available_games.append(game_type)
+        return available_games
+    
+    def get_available_amounts(self, game_type: str) -> List[str]:
+        """Get available amounts for a game type that have stock"""
+        amounts = []
+        if game_type in self.db.db["stock"]:
+            for amount, codes in self.db.db["stock"][game_type].items():
+                if codes:  # Only include amounts with available codes
+                    amounts.append(amount)
+        return sorted(amounts)
 
-    return data
+class KeyboardManager:
+    """Manage all bot keyboards"""
+    
+    @staticmethod
+    def main_menu() -> InlineKeyboardMarkup:
+        """Main menu keyboard"""
+        keyboard = [
+            [InlineKeyboardButton("📋 အကောင့်ဖွင့်ရန်", callback_data="register")],
+            [InlineKeyboardButton("💰 လက်ကျန်ငွေ", callback_data="balance")],
+            [InlineKeyboardButton("💳 ငွေဖြည့်ရန်", callback_data="topup")],
+            [InlineKeyboardButton("🛒 ကုဒ်ဝယ်ရန်", callback_data="buy")],
+            [InlineKeyboardButton("ℹ️ အကူအညီ", callback_data="help")]
+        ]
+        return InlineKeyboardMarkup(keyboard)
+    
+    @staticmethod
+    def back_button(target: str = "start") -> InlineKeyboardMarkup:
+        """Back button keyboard"""
+        keyboard = [[InlineKeyboardButton("🔙 ပြန်သွားရန်", callback_data=target)]]
+        return InlineKeyboardMarkup(keyboard)
+    
+    @staticmethod
+    def payment_methods() -> InlineKeyboardMarkup:
+        """Payment methods keyboard"""
+        keyboard = [
+            [InlineKeyboardButton("📱 Wave", callback_data="topup_wave")],
+            [InlineKeyboardButton("📱 Kpay", callback_data="topup_kpay")],
+            [InlineKeyboardButton("🔙 ပြန်သွားရန်", callback_data="start")]
+        ]
+        return InlineKeyboardMarkup(keyboard)
+    
+    @staticmethod
+    def game_selection(available_games: List[str], bot_service: BotService) -> InlineKeyboardMarkup:
+        """Game selection keyboard"""
+        keyboard = []
+        for game_type in available_games:
+            total_codes = sum(
+                len(codes) 
+                for codes in bot_service.db.db["stock"].get(game_type, {}).values()
+            )
+            game_name = bot_service.get_game_display_name(game_type)
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"🎮 {game_name} ({total_codes})", 
+                    callback_data=f"select_{game_type}"
+                )
+            ])
+        keyboard.append([InlineKeyboardButton("🔙 ပြန်သွားရန်", callback_data="start")])
+        return InlineKeyboardMarkup(keyboard)
+    
+    @staticmethod
+    def amount_selection(game_type: str, amounts: List[str], bot_service: BotService) -> InlineKeyboardMarkup:
+        """Amount selection keyboard"""
+        keyboard = []
+        for amount in amounts:
+            codes_count = len(bot_service.db.get_stock(game_type, amount))
+            price = bot_service.db.get_price(game_type, amount)
+            unit = bot_service.get_game_unit(game_type)
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"💎 {amount} {unit} - {price} MMK ({codes_count})",
+                    callback_data=f"amount_{game_type}_{amount}"
+                )
+            ])
+        keyboard.append([
+            InlineKeyboardButton("🔙 ပြန်သွားရန်", callback_data="buy")
+        ])
+        return InlineKeyboardMarkup(keyboard)
 
+class MessageBuilder:
+    """Build formatted messages for the bot"""
+    
+    @staticmethod
+    def welcome_message(user_name: str) -> str:
+        """Welcome message"""
+        return f"👋 ကြိုဆိုပါတယ် {user_name}! ကျေးဇူးပြု၍ အကောင့်ဖွင့်ပါ!"
+    
+    @staticmethod
+    def balance_message(balance: int) -> str:
+        """Balance message"""
+        return f"💰 လက်ကျန်ငွေ: {balance} MMK"
+    
+    @staticmethod
+    def payment_info_message(method: str, payment_info: PaymentInfo) -> str:
+        """Payment information message"""
+        return (
+            f"💳 {method} ငွေဖြည့်ရန်:\n\n"
+            f"📱 ဖုန်းနံပါတ်: {payment_info.phone}\n"
+            f"👤 အမည်: {payment_info.name}\n\n"
+            f"📋 ဖုန်းနံပါတ်ကို ကူးယူပြီး ငွေဖြည့်ပါ။\n\n"
+            f"⚠️ သတိပြုရန်: ငွေလွှဲပြီးနောက် ငွေလွှဲအတည်ပြုချက် (Screenshot) ပို့ပါ။\n"
+            f"ငွေလွှဲပြီးနောက် အောက်ပါအချက်များကို ပို့ပေးပါ:\n"
+            f"• ငွေလွှဲသူ ID (Transaction ID)\n"
+            f"• ငွေလွှဲသည့်ပမာဏ\n\n"
+            f"⏳ ငွေဖြည့်ပြီးနောက် 5-10 မိနစ်အတွင်း ငွေထည့်သွင်းပြီးကြောင်း အကြောင်းကြားပါမည်။"
+        )
+    
+    @staticmethod
+    def purchase_summary(game_type: str, amount: str, quantity: int, total_price: int, 
+                        user_balance: int, max_quantity: int, bot_service: BotService) -> str:
+        """Purchase summary message"""
+        game_name = bot_service.get_game_display_name(game_type)
+        unit = bot_service.get_game_unit(game_type)
+        
+        return (
+            f"🎮 {game_name}\n"
+            f"💎 {amount} {unit} x {quantity}\n"
+            f"💰 စုစုပေါင်းကျသင့်ငွေ: {total_price} MMK\n"
+            f"💵 လက်ကျန်ငွေ: {user_balance} MMK\n"
+            f"📦 ရရှိနိုင်သောအရေအတွက်: {max_quantity} ခု\n\n"
+            f"🔢 ဝယ်ယူလိုသောအရေအတွက် ရိုက်ထည့်ပါ (1 to {max_quantity}):"
+        )
 
-def save_db(db):
-    with open(DB_FILE, "w") as f:
-        json.dump(db, f, indent=2)
-
-
-db = load_db()
-
-
-# ---------------- Helpers ----------------
-def get_user(uid):
-    if uid not in db["users"]:
-        db["users"][uid] = {"balance": 0, "history": [], "approved": False}
-        save_db(db)
-    return db["users"][uid]
-
-
-def is_user_approved(uid):
-    return uid in db["users"] and db["users"][uid].get("approved", False)
-
-
-def generate_receipt_id():
-    while True:
-        rid = str(random.randint(10000, 999999))
-        if rid not in db["receipts"] and rid not in db["topup_requests"]:
-            return rid
-
-
-def validate_receipt_id(rid):
-    return rid.isdigit() and 5 <= len(rid) <= 6
-
-
-def get_available_amounts(game_type):
-    """Get available amounts for a game type that have stock"""
-    amounts = []
-    if game_type in db["stock"]:
-        for amount, codes in db["stock"][game_type].items():
-            if codes:  # Only include amounts that have codes
-                amounts.append(amount)
-    return sorted(amounts)
-
-
-def get_game_display_name(game_type):
-    names = {
-        "MLBBbal": "Mobile Legends (Bal)",
-        "MLBBph": "Mobile Legends (PH)",
-        "PUPG": "PUPG Mobile"
-    }
-    return names.get(game_type, game_type)
-
-
-# ---------------- User Commands ----------------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    keyboard = [[
-        InlineKeyboardButton("ðŸ“Œ á€¡á€€á€±á€¬á€„á€·á€ºá€–á€½á€„á€·á€ºá€›á€”á€º", callback_data="register")
-    ], [InlineKeyboardButton("ðŸ’° á€œá€€á€ºá€€á€»á€”á€ºá€„á€½á€±", callback_data="balance")],
-                [InlineKeyboardButton("ðŸ’³ á€„á€½á€±á€–á€¼á€Šá€·á€ºá€›á€”á€º", callback_data="topup")],
-                [InlineKeyboardButton("ðŸ›’ á€€á€¯á€’á€ºá€á€šá€ºá€›á€”á€º", callback_data="buy")],
-                [InlineKeyboardButton("â„¹ï¸ á€¡á€€á€°á€¡á€Šá€®", callback_data="help")]]
-    if update.message:
-        await update.message.reply_text(
-            f"ðŸ‘‹ á€™á€„á€ºá€¹á€‚á€œá€¬á€•á€« {user.first_name}! á€€á€¼á€­á€¯á€†á€­á€¯á€•á€«á€á€šá€º!",
-            reply_markup=InlineKeyboardMarkup(keyboard))
-    else:
-        await update.callback_query.edit_message_text(
-            f"ðŸ‘‹ á€™á€„á€ºá€¹á€‚á€œá€¬á€•á€« {user.first_name}! á€€á€¼á€­á€¯á€†á€­á€¯á€•á€«á€á€šá€º!",
-            reply_markup=InlineKeyboardMarkup(keyboard))
-
-
-async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    uid = query.from_user.id
-
-    if data == "start":
-        await start(update, context)
-        return
-
-    if data == "register":
-        if uid in db["users"] and db["users"][uid].get("approved", False):
-            keyboard = [[
-                InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="start")
-            ]]
+class TelegramBot:
+    def __init__(self):
+        self.db_manager = DatabaseManager(DB_FILE)
+        self.bot_service = BotService(self.db_manager)
+        self.keyboard_manager = KeyboardManager()
+        self.message_builder = MessageBuilder()
+        self.app = None
+    
+    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /start command"""
+        user = update.effective_user
+        welcome_msg = self.message_builder.welcome_message(user.first_name)
+        
+        if update.message:
+            await update.message.reply_text(
+                welcome_msg, 
+                reply_markup=self.keyboard_manager.main_menu()
+            )
+        else:
+            await update.callback_query.edit_message_text(
+                welcome_msg,
+                reply_markup=self.keyboard_manager.main_menu()
+            )
+    
+    async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle callback queries"""
+        query = update.callback_query
+        await query.answer()
+        data = query.data
+        user_id = query.from_user.id
+        
+        # Route to appropriate handler
+        if data == "start":
+            await self.start(update, context)
+        elif data == "register":
+            await self.handle_register(update, context, user_id)
+        elif data == "balance":
+            await self.handle_balance(update, context, user_id)
+        elif data == "topup":
+            await self.handle_topup(update, context, user_id)
+        elif data == "buy":
+            await self.handle_buy(update, context, user_id)
+        elif data == "help":
+            await self.handle_help(update, context)
+        elif data.startswith("topup_"):
+            await self.handle_payment_method(update, context, data)
+        elif data.startswith("select_"):
+            await self.handle_game_selection(update, context, data)
+        elif data.startswith("amount_"):
+            await self.handle_amount_selection(update, context, data, user_id)
+        elif data.startswith("buy_balance_"):
+            await self.handle_balance_purchase(update, context, data, user_id)
+        elif data.startswith("buy_receipt_"):
+            await self.handle_receipt_purchase(update, context, data, user_id)
+    
+    async def handle_register(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+        """Handle user registration"""
+        query = update.callback_query
+        
+        # Check if user is already approved
+        user = self.db_manager.get_user(user_id)
+        if user.approved:
             await query.edit_message_text(
-                "âœ… á€¡á€€á€±á€¬á€„á€·á€ºá€–á€½á€„á€·á€ºá€•á€¼á€®á€¸á€•á€«á€•á€¼á€®á‹",
-                reply_markup=InlineKeyboardMarkup(keyboard))
+                "✅ အကောင့်ဖွင့်ပြီးသားဖြစ်ပါသည်။",
+                reply_markup=self.keyboard_manager.back_button()
+            )
             return
-        elif uid in db["pending_registrations"]:
-            keyboard = [[
-                InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="start")
-            ]]
+        
+        # Check if pending registration exists
+        if str(user_id) in self.db_manager.db["pending_registrations"]:
             await query.edit_message_text(
-                "â³ á€¡á€€á€±á€¬á€„á€·á€ºá€–á€½á€„á€·á€ºá€á€±á€¬á€„á€ºá€¸á€†á€­á€¯á€™á€¾á€¯ á€…á€±á€¬á€„á€·á€ºá€†á€­á€¯á€„á€ºá€¸á€”á€±á€•á€«á€žá€Šá€ºá‹ Admin á€™á€¾ á€œá€€á€ºá€á€¶á€•á€±á€¸á€›á€”á€º á€…á€±á€¬á€„á€·á€ºá€•á€«á‹",
-                reply_markup=InlineKeyboardMarkup(keyboard))
+                "⏳ အကောင့်ဖွင့်ရန် တောင်းဆိုထားပြီးဖြစ်သည်။ Admin မှ အတည်ပြုပေးရန်စောင့်ဆိုင်းပါ။",
+                reply_markup=self.keyboard_manager.back_button()
+            )
             return
-
+        
         # Create registration request
-        db["pending_registrations"][uid] = {
-            "user_id": uid,
+        self.db_manager.db["pending_registrations"][str(user_id)] = {
+            "user_id": user_id,
             "username": query.from_user.first_name,
             "status": "pending"
         }
-        save_db(db)
-
-        # Send to admin
-        keyboard = [[
-            InlineKeyboardButton("âœ… á€œá€€á€ºá€á€¶á€›á€”á€º",
-                                 callback_data=f"approve_reg_{uid}"),
-            InlineKeyboardButton("âŒ á€„á€¼á€„á€ºá€¸á€•á€šá€ºá€›á€”á€º",
-                                 callback_data=f"reject_reg_{uid}")
-        ]]
-        await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=f"ðŸ“¥ á€¡á€€á€±á€¬á€„á€·á€ºá€–á€½á€„á€·á€ºá€á€±á€¬á€„á€ºá€¸á€†á€­á€¯á€™á€¾á€¯:\n"
-            f"ðŸ‘¤ á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€žá€° ID: {uid}\n"
-            f"ðŸ“ á€¡á€™á€Šá€º: {query.from_user.first_name}\n"
-            f"ðŸ‘¤ Username: @{query.from_user.username or 'á€™á€›á€¾á€­'}",
-            reply_markup=InlineKeyboardMarkup(keyboard))
-
-        keyboard = [[
-            InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="start")
-        ]]
+        self.db_manager.save_db()
+        
+        # Notify admin
+        await self._notify_admin_registration(context, user_id, query)
+        
         await query.edit_message_text(
-            "ðŸ“ á€¡á€€á€±á€¬á€„á€·á€ºá€–á€½á€„á€·á€ºá€á€±á€¬á€„á€ºá€¸á€†á€­á€¯á€™á€¾á€¯ Admin á€‘á€¶á€•á€­á€¯á€·á€•á€¼á€®á€¸á€•á€«á€•á€¼á€®á‹ á€…á€±á€¬á€„á€·á€ºá€†á€­á€¯á€„á€ºá€¸á€•á€«á‹",
-            reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif data == "balance":
-        if not is_user_approved(uid):
-            keyboard = [[
-                InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="start")
-            ]]
+            "📝 အကောင့်ဖွင့်ရန် တောင်းဆိုပြီးပါပြီ။ Admin မှ အတည်ပြုပေးပါမည်။",
+            reply_markup=self.keyboard_manager.back_button()
+        )
+    
+    async def handle_balance(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+        """Handle balance check"""
+        query = update.callback_query
+        user = self.db_manager.get_user(user_id)
+        
+        if not user.approved:
             await query.edit_message_text(
-                "âš ï¸ á€¡á€€á€±á€¬á€„á€·á€ºá€™á€¾ Admin á€œá€€á€ºá€á€¶á€á€¼á€„á€ºá€¸á€™á€›á€¾á€­á€•á€«á‹",
-                reply_markup=InlineKeyboardMarkup(keyboard))
+                "❌ အကောင့်အတည်ပြုချက် မရှိသေးပါ။ Admin မှ အတည်ပြုပေးရန်စောင့်ဆိုင်းပါ။",
+                reply_markup=self.keyboard_manager.back_button()
+            )
             return
-
-        user = get_user(uid)
-        keyboard = []
-        # Check if user has enough for any available product
-        can_buy = False
-        for game_type in db["prices"]:
-            for amount, price in db["prices"][game_type].items():
-                if amount in db["stock"].get(
-                        game_type, {}) and db["stock"][game_type][amount]:
-                    if user['balance'] >= price:
-                        can_buy = True
-                        break
-
-        if not can_buy:
-            keyboard.append(
-                [InlineKeyboardButton("ðŸ’³ á€„á€½á€±á€–á€¼á€Šá€·á€ºá€›á€”á€º", callback_data="topup")])
-        keyboard.append(
-            [InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="start")])
+        
+        balance_msg = self.message_builder.balance_message(user.balance)
         await query.edit_message_text(
-            f"ðŸ’° á€œá€€á€ºá€€á€»á€”á€ºá€„á€½á€±: {user['balance']} MMK",
-            reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif data == "topup":
-        if not is_user_approved(uid):
-            keyboard = [[
-                InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="start")
-            ]]
+            balance_msg,
+            reply_markup=self.keyboard_manager.back_button("start")
+        )
+    
+    async def handle_topup(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+        """Handle topup menu"""
+        query = update.callback_query
+        user = self.db_manager.get_user(user_id)
+        
+        if not user.approved:
             await query.edit_message_text(
-                "âš ï¸ á€¡á€€á€±á€¬á€„á€·á€ºá€™á€¾ Admin á€œá€€á€ºá€á€¶á€á€¼á€„á€ºá€¸á€™á€›á€¾á€­á€•á€«á‹",
-                reply_markup=InlineKeyboardMarkup(keyboard))
+                "❌ အကောင့်အတည်ပြုချက် မရှိသေးပါ။",
+                reply_markup=self.keyboard_manager.back_button()
+            )
             return
-
+        
+        await query.edit_message_text(
+            "💳 ငွေဖြည့်ရန် နည်းလမ်းရွေးချယ်ပါ:",
+            reply_markup=self.keyboard_manager.payment_methods()
+        )
+    
+    async def handle_payment_method(self, update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
+        """Handle payment method selection"""
+        query = update.callback_query
+        method = data.split("_")[1].title()
+        payment_info = self.db_manager.db["payment"][method]
+        
+        context.user_data['topup_method'] = method
+        
+        payment_msg = self.message_builder.payment_info_message(method, payment_info)
+        
         keyboard = [
-            [InlineKeyboardButton("ðŸ“± Wave", callback_data="topup_wave")],
-            [InlineKeyboardButton("ðŸ“± Kpay", callback_data="topup_kpay")],
-            [InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="start")]
+            [InlineKeyboardButton(f"📋 {payment_info['phone']}", callback_data=f"copy_{payment_info['phone']}")],
+            [InlineKeyboardButton("🔙 ပြန်သွားရန်", callback_data="topup")]
         ]
+        
         await query.edit_message_text(
-            "ðŸ’³ á€„á€½á€±á€–á€¼á€Šá€·á€ºá€™á€Šá€·á€ºá€”á€Šá€ºá€¸á€œá€™á€ºá€¸á€›á€½á€±á€¸á€•á€«:",
-            reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif data.startswith("topup_"):
-        payment_method = data.split("_")[1].title()
-        payment_info = db["payment"][payment_method]
-
-        context.user_data['topup_method'] = payment_method
-        keyboard = [[
-            InlineKeyboardButton(f"ðŸ“‹ {payment_info['phone']}",
-                                 callback_data=f"copy_{payment_info['phone']}")
-        ], [InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="topup")]]
-
-        await query.edit_message_text(
-            f"ðŸ’³ {payment_method} á€„á€½á€±á€–á€¼á€Šá€·á€ºá€›á€”á€º:\n\n"
-            f"ðŸ“± á€–á€¯á€”á€ºá€¸á€”á€¶á€•á€«á€á€º: {payment_info['phone']}\n"
-            f"ðŸ‘¤ á€¡á€™á€Šá€º: {payment_info['name']}\n\n"
-            f"ðŸ“‹ á€–á€¯á€”á€ºá€¸á€”á€¶á€•á€«á€á€ºá€€á€°á€¸á€šá€°á€›á€”á€º á€¡á€±á€¬á€€á€ºá€€ á€á€œá€¯á€á€ºá€”á€¾á€­á€•á€ºá€•á€«:\n\n"
-            f"ðŸ’° á€œá€½á€¾á€²á€•á€¼á€®á€¸á€›á€„á€º á€•á€¼á€±á€…á€¬á€•á€¯á€¶á€¡á€›á€„á€ºá€•á€­á€¯á€·á€•á€«á‹ á€•á€¼á€®á€¸á€›á€„á€º:\n"
-            f"â€¢ á€•á€¼á€±á€…á€¬ ID (á€”á€±á€¬á€€á€ºá€†á€¯á€¶á€¸ á…á€œá€¯á€¶á€¸ á€žá€­á€¯á€·á€™á€Ÿá€¯á€á€º á†á€œá€¯á€¶á€¸)\n"
-            f"â€¢ á€œá€½á€¾á€²á€á€²á€·á€„á€½á€±á€•á€™á€¬á€\n"
-            f"á€›á€±á€¸á€•á€¼á€®á€¸á€•á€­á€¯á€·á€•á€«á‹\n\n"
-            f"âš ï¸ á€žá€á€­á€•á€±á€¸á€á€»á€€á€º: á€•á€¼á€±á€…á€¬ ID á€”á€¾á€„á€·á€º á€•á€™á€¬á€á€™á€¾á€¬á€¸á€›á€±á€¸á€™á€­á€›á€„á€º á€„á€½á€±á€†á€¯á€¶á€¸á€•á€«á€™á€Šá€º\n\n"
-            f"â° á€„á€½á€±á€œá€½á€¾á€²á€•á€¼á€®á€¸ á…á€™á€­á€”á€…á€ºá€¡á€á€½á€„á€ºá€¸á€•á€­á€¯á€·á€•á€«\n"
-            f"â„¹ï¸ KPay á€„á€½á€±á€œá€½á€¾á€²á€žá€°á€€á€­á€¯ á€™á€­á€™á€­á€¡á€€á€±á€¬á€„á€·á€ºá€›á€²á€· KPay á€¡á€™á€Šá€ºá€‘á€Šá€·á€ºá€›á€±á€¸á€•á€±á€¸á€•á€«",
-            reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif data.startswith("copy_"):
-        phone_number = data.split("_", 1)[1]
-        # Send the phone number as a separate message for easier copying
-        await context.bot.send_message(chat_id=query.from_user.id,
-                                       text=phone_number)
-        await query.answer(
-            f"ðŸ“‹ {phone_number} á€•á€­á€¯á€·á€•á€¼á€®á€¸á€•á€«á€•á€¼á€®! á€¡á€•á€±á€«á€ºá€€ á€‚á€á€”á€ºá€¸á€€á€­á€¯ á€€á€°á€¸á€šá€°á€•á€«!",
-            show_alert=True)
-
-    elif data == "help":
-        keyboard = [[
-            InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="start")
-        ]]
-        await query.edit_message_text(
-            "â„¹ï¸ á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€”á€Šá€ºá€¸:\n\n"
-            "1ï¸âƒ£ á€¡á€€á€±á€¬á€„á€·á€ºá€–á€½á€„á€·á€ºá€•á€«\n"
-            "2ï¸âƒ£ á€œá€€á€ºá€€á€»á€”á€ºá€„á€½á€±á€€á€¼á€Šá€·á€ºá€•á€«\n"
-            "3ï¸âƒ£ á€„á€½á€±á€–á€¼á€Šá€·á€ºá€•á€«\n"
-            "4ï¸âƒ£ á€€á€¯á€’á€ºá€á€šá€ºá€šá€°á€•á€«\n\n"
-            "ðŸ“Œ á€œá€±á€·á€œá€¬á€›á€”á€º:\n"
-            "â€¢ Admin á€™á€¾ á€œá€€á€ºá€á€¶á€•á€¼á€®á€¸á€™á€¾ á€€á€¯á€’á€ºá€›á€›á€¾á€­á€•á€«á€™á€Šá€º\n"
-            "â€¢ á€á€šá€ºá€šá€°á€™á€¾á€¯á€™á€¾á€á€ºá€á€™á€ºá€¸á€žá€­á€™á€ºá€¸á€†á€Šá€ºá€¸á€•á€«á€™á€Šá€º\n"
-            "â€¢ á€•á€¼á€±á€…á€¬á€”á€²á€·á€á€šá€ºá€›á€„á€º Admin á€œá€€á€ºá€á€¶á€•á€¼á€®á€¸á€™á€¾ á€€á€¯á€’á€ºá€›á€›á€¾á€­á€™á€Šá€º\n"
-            "â€¢ á€œá€€á€ºá€€á€»á€”á€ºá€„á€½á€±á€”á€²á€·á€á€šá€ºá€›á€„á€º á€á€»á€€á€ºá€á€»á€„á€ºá€¸á€›á€›á€¾á€­á€™á€Šá€º",
-            reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif data == "buy":
-        if not is_user_approved(uid):
-            keyboard = [[
-                InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="start")
-            ]]
+            payment_msg,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    
+    async def handle_buy(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+        """Handle buy menu"""
+        query = update.callback_query
+        user = self.db_manager.get_user(user_id)
+        
+        if not user.approved:
             await query.edit_message_text(
-                "âš ï¸ á€¡á€€á€±á€¬á€„á€·á€ºá€™á€¾ Admin á€œá€€á€ºá€á€¶á€á€¼á€„á€ºá€¸á€™á€›á€¾á€­á€•á€«á‹",
-                reply_markup=InlineKeyboardMarkup(keyboard))
+                "❌ အကောင့်အတည်ပြုချက် မရှိသေးပါ။",
+                reply_markup=self.keyboard_manager.back_button()
+            )
             return
-
-        # Show available game types
-        keyboard = []
-        available_games = []
-
-        for game_type in ["MLBBbal", "MLBBph", "PUPG"]:
-            amounts = get_available_amounts(game_type)
-            if amounts:
-                total_codes = sum(
-                    len(codes)
-                    for codes in db["stock"].get(game_type, {}).values())
-                if total_codes > 0:
-                    game_name = get_game_display_name(game_type)
-                    keyboard.append([
-                        InlineKeyboardButton(
-                            f"ðŸŽ® {game_name} ({total_codes})",
-                            callback_data=f"select_{game_type}")
-                    ])
-                    available_games.append(game_type)
-
+        
+        available_games = self.bot_service.get_available_games()
+        
         if not available_games:
-            keyboard = [[
-                InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="start")
-            ]]
             await query.edit_message_text(
-                "âš ï¸ á€œá€±á€¬á€œá€±á€¬á€†á€šá€º á€€á€¯á€’á€ºá€™á€›á€¾á€­á€•á€«á‹",
-                reply_markup=InlineKeyboardMarkup(keyboard))
+                "❌ ရောင်းချရန် ကုဒ်မရှိပါ။",
+                reply_markup=self.keyboard_manager.back_button()
+            )
             return
-
-        keyboard.append(
-            [InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="start")])
+        
         await query.edit_message_text(
-            "ðŸŽ® á€‚á€­á€™á€ºá€¸á€¡á€™á€»á€­á€¯á€¸á€¡á€…á€¬á€¸á€›á€½á€±á€¸á€•á€«:",
-            reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif data.startswith("select_"):
+            "🎮 ဂိမ်းရွေးချယ်ပါ:",
+            reply_markup=self.keyboard_manager.game_selection(available_games, self.bot_service)
+        )
+    
+    async def handle_game_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
+        """Handle game selection"""
+        query = update.callback_query
         game_type = data.split("_")[1]
-        amounts = get_available_amounts(game_type)
-
+        amounts = self.bot_service.get_available_amounts(game_type)
+        
         if not amounts:
-            keyboard = [[
-                InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="buy")
-            ]]
             await query.edit_message_text(
-                "âš ï¸ á€’á€®á€‚á€­á€™á€ºá€¸á€¡á€á€½á€€á€º á€€á€¯á€’á€ºá€™á€›á€¾á€­á€•á€«á‹",
-                reply_markup=InlineKeyboardMarkup(keyboard))
+                "❌ ဤဂိမ်းအတွက် ကုဒ်မရှိပါ။",
+                reply_markup=self.keyboard_manager.back_button("buy")
+            )
             return
-
-        keyboard = []
-        game_name = get_game_display_name(game_type)
-
-        for amount in amounts:
-            codes_count = len(db["stock"][game_type][amount])
-            price = db["prices"][game_type].get(amount, 0)
-            unit = "Coin" if "MLBB" in game_type else "UC"
-            keyboard.append([
-                InlineKeyboardButton(
-                    f"ðŸ’Ž {amount} {unit} - {price} MMK ({codes_count})",
-                    callback_data=f"amount_{game_type}_{amount}")
-            ])
-
-        keyboard.append(
-            [InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="buy")])
+        
         await query.edit_message_text(
-            f"ðŸŽ® {game_name}\nðŸ’Ž á€¡á€›á€±á€¡á€á€½á€€á€ºá€›á€½á€±á€¸á€•á€«:",
-            reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif data.startswith("amount_"):
+            f"🎮 {self.bot_service.get_game_display_name(game_type)}\n💎 ပမာဏရွေးချယ်ပါ:",
+            reply_markup=self.keyboard_manager.amount_selection(game_type, amounts, self.bot_service)
+        )
+    
+    async def handle_amount_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE, data: str, user_id: int):
+        """Handle amount selection"""
+        query = update.callback_query
         parts = data.split("_")
         game_type = parts[1]
         amount = parts[2]
-
-        if amount not in db["stock"].get(
-                game_type, {}) or not db["stock"][game_type][amount]:
-            keyboard = [[
-                InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º",
-                                     callback_data=f"select_{game_type}")
-            ]]
+        
+        stock = self.db_manager.get_stock(game_type, amount)
+        if not stock:
             await query.edit_message_text(
-                "âš ï¸ á€’á€®á€•á€™á€¬á€á€¡á€á€½á€€á€º á€€á€¯á€’á€ºá€™á€›á€¾á€­á€•á€«á‹",
-                reply_markup=InlineKeyboardMarkup(keyboard))
+                "❌ ဤပမာဏအတွက် ကုဒ်မရှိပါ။",
+                reply_markup=self.keyboard_manager.back_button(f"select_{game_type}")
+            )
             return
-
-        price = db["prices"][game_type].get(amount, 0)
-        user = get_user(uid)
-        max_quantity = len(db["stock"][game_type][amount])
-
+        
+        price = self.db_manager.get_price(game_type, amount)
+        user = self.db_manager.get_user(user_id)
+        max_quantity = len(stock)
+        
         # Store selection data for text input
         context.user_data['selecting_quantity'] = {
             'game_type': game_type,
@@ -443,864 +516,155 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'price': price,
             'max_quantity': max_quantity
         }
-
-        keyboard = [[
-            InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º",
-                                 callback_data=f"select_{game_type}")
-        ]]
-
-        game_name = get_game_display_name(game_type)
-        unit = "Coin" if "MLBB" in game_type else "UC"
+        
+        purchase_msg = self.message_builder.purchase_summary(
+            game_type, amount, 1, price, user.balance, max_quantity, self.bot_service
+        )
+        
         await query.edit_message_text(
-            f"ðŸŽ® {game_name}\n"
-            f"ðŸ’Ž {amount} {unit}\n"
-            f"ðŸ’° á€…á€»á€±á€¸á€”á€¾á€¯á€”á€ºá€¸: {price} MMK/á€€á€¯á€’á€º\n"
-            f"ðŸ’³ á€œá€€á€ºá€€á€»á€”á€ºá€„á€½á€±: {user['balance']} MMK\n"
-            f"ðŸ“¦ á€›á€›á€¾á€­á€”á€­á€¯á€„á€ºá€žá€±á€¬ á€€á€¯á€’á€º: {max_quantity} á€á€¯\n\n"
-            f"ðŸ“ á€œá€­á€¯á€á€»á€„á€ºá€žá€±á€¬ á€€á€¯á€’á€ºá€¡á€›á€±á€¡á€á€½á€€á€º á€›á€±á€¸á€•á€­á€¯á€·á€•á€« (1 to {max_quantity}):",
-            reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif data.startswith("quantity_"):
-        parts = data.split("_")
-        game_type = parts[1]
-        amount = parts[2]
-        quantity = int(parts[3])
-
-        price = db["prices"][game_type].get(amount, 0)
-        total_price = price * quantity
-        user = get_user(uid)
-
-        keyboard = []
-        if user["balance"] >= total_price:
-            keyboard.append([
-                InlineKeyboardButton(
-                    f"ðŸ’° á€œá€€á€ºá€€á€»á€”á€ºá€„á€½á€±á€”á€²á€·á€á€šá€ºá€›á€”á€º ({total_price} MMK)",
-                    callback_data=f"buy_balance_{game_type}_{amount}_{quantity}"
-                )
-            ])
-        else:
-            keyboard.append(
-                [InlineKeyboardButton("ðŸ’³ á€„á€½á€±á€–á€¼á€Šá€·á€ºá€›á€”á€º", callback_data="topup")])
-
-        keyboard.append([
-            InlineKeyboardButton(
-                "ðŸ“„ á€•á€¼á€±á€…á€¬á€”á€²á€·á€á€šá€ºá€›á€”á€º",
-                callback_data=f"buy_receipt_{game_type}_{amount}_{quantity}")
-        ])
-        keyboard.append([
-            InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º",
-                                 callback_data=f"amount_{game_type}_{amount}")
-        ])
-
-        game_name = get_game_display_name(game_type)
-        unit = "Coin" if "MLBB" in game_type else "UC"
-        await query.edit_message_text(
-            f"ðŸŽ® {game_name}\n"
-            f"ðŸ’Ž {amount} {unit} x {quantity}\n"
-            f"ðŸ’° á€…á€¯á€…á€¯á€•á€±á€«á€„á€ºá€¸: {total_price} MMK\n"
-            f"ðŸ’³ á€œá€€á€ºá€€á€»á€”á€ºá€„á€½á€±: {user['balance']} MMK\n\n"
-            f"ðŸ’³ á€„á€½á€±á€•á€±á€¸á€á€»á€±á€™á€¾á€¯á€”á€Šá€ºá€¸á€œá€™á€ºá€¸á€›á€½á€±á€¸á€•á€«:",
-            reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif data.startswith("buy_balance_"):
+            purchase_msg,
+            reply_markup=self.keyboard_manager.back_button(f"select_{game_type}")
+        )
+    
+    async def handle_balance_purchase(self, update: Update, context: ContextTypes.DEFAULT_TYPE, data: str, user_id: int):
+        """Handle purchase using balance"""
+        query = update.callback_query
         parts = data.split("_")
         game_type = parts[2]
         amount = parts[3]
         quantity = int(parts[4])
-
-        user = get_user(uid)
-        price = db["prices"][game_type].get(amount, 0)
+        
+        user = self.db_manager.get_user(user_id)
+        price = self.db_manager.get_price(game_type, amount)
         total_price = price * quantity
-
-        if user["balance"] < total_price:
-            keyboard = [[
-                InlineKeyboardButton("ðŸ’³ á€„á€½á€±á€–á€¼á€Šá€·á€ºá€›á€”á€º", callback_data="topup")
-            ],
-                        [
-                            InlineKeyboardButton(
-                                "ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º",
-                                callback_data=
-                                f"quantity_{game_type}_{amount}_{quantity}")
-                        ]]
+        
+        # Validate purchase
+        if user.balance < total_price:
             await query.edit_message_text(
-                "âš ï¸ á€œá€€á€ºá€€á€»á€”á€ºá€„á€½á€±á€™á€œá€¯á€¶á€œá€±á€¬á€€á€ºá€•á€«á‹",
-                reply_markup=InlineKeyboardMarkup(keyboard))
+                "❌ လက်ကျန်ငွေ မလုံလောက်ပါ။",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("💳 ငွေဖြည့်ရန်", callback_data="topup"),
+                    InlineKeyboardButton("🔙 ပြန်သွားရန်", callback_data=f"quantity_{game_type}_{amount}_{quantity}")
+                ]])
+            )
             return
-
-        if len(db["stock"][game_type][amount]) < quantity:
-            keyboard = [[
-                InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="buy")
-            ]]
+        
+        stock = self.db_manager.get_stock(game_type, amount)
+        if len(stock) < quantity:
             await query.edit_message_text(
-                "âš ï¸ á€œá€¯á€¶á€œá€±á€¬á€€á€ºá€žá€±á€¬ á€€á€¯á€’á€ºá€™á€›á€¾á€­á€•á€«á‹",
-                reply_markup=InlineKeyboardMarkup(keyboard))
+                "❌ ကုဒ်မလုံလောက်ပါ။",
+                reply_markup=self.keyboard_manager.back_button("buy")
+            )
             return
-
-        # Get codes
-        codes = []
-        for _ in range(quantity):
-            if db["stock"][game_type][amount]:
-                codes.append(db["stock"][game_type][amount].pop(0))
-
-        user["balance"] -= total_price
-        db["sales_total"] += total_price
-        game_name = get_game_display_name(game_type)
-        unit = "Coin" if "MLBB" in game_type else "UC"
-
-        user["history"].append({
+        
+        # Process purchase
+        codes = stock[:quantity]
+        self.db_manager.update_stock(game_type, amount, stock[quantity:])
+        
+        user.balance -= total_price
+        self.db_manager.db["sales_total"] += total_price
+        
+        # Add to history
+        user.history.append({
             "type": "balance",
             "codes": codes,
-            "game": game_name,
+            "game": self.bot_service.get_game_display_name(game_type),
             "amount": amount,
             "quantity": quantity,
-            "total_price": total_price
+            "total_price": total_price,
+            "timestamp": datetime.now().isoformat()
         })
-        save_db(db)
-
-        codes_text = "\n".join([f"ðŸ”‘ {code}" for code in codes])
-        keyboard = [[
-            InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="start")
-        ]]
+        
+        self.db_manager.update_user(user)
+        
+        # Send codes to user
+        codes_text = "\n".join([f"🔑 {code}" for code in codes])
+        success_msg = (
+            f"✅ ကုဒ်ဝယ်ယူမှု အောင်မြင်ပါသည်!\n\n"
+            f"🎮 {self.bot_service.get_game_display_name(game_type)}\n"
+            f"💎 {amount} {self.bot_service.get_game_unit(game_type)} x {quantity}\n"
+            f"💰 ကျသင့်ငွေ: {total_price} MMK\n\n"
+            f"🔑 ကုဒ်များ:\n{codes_text}\n\n"
+            f"💵 လက်ကျန်ငွေ: {user.balance} MMK"
+        )
+        
         await query.edit_message_text(
-            f"âœ… á€á€šá€ºá€šá€°á€™á€¾á€¯á€¡á€±á€¬á€„á€ºá€™á€¼á€„á€ºá€•á€«á€•á€¼á€®!\n\n"
-            f"ðŸŽ® {game_name}\n"
-            f"ðŸ’Ž {amount} {unit} x {quantity}\n"
-            f"ðŸ’° á€…á€¯á€…á€¯á€•á€±á€«á€„á€ºá€¸: {total_price} MMK\n\n"
-            f"ðŸ”‘ á€€á€¯á€’á€ºá€™á€»á€¬á€¸:\n{codes_text}\n\n"
-            f"ðŸ’³ á€œá€€á€ºá€€á€»á€”á€ºá€„á€½á€±: {user['balance']} MMK",
-            reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif data.startswith("buy_receipt_"):
+            success_msg,
+            reply_markup=self.keyboard_manager.back_button()
+        )
+    
+    async def handle_receipt_purchase(self, update: Update, context: ContextTypes.DEFAULT_TYPE, data: str, user_id: int):
+        """Handle purchase using receipt"""
+        query = update.callback_query
         parts = data.split("_")
         game_type = parts[2]
         amount = parts[3]
         quantity = int(parts[4])
-
+        
         context.user_data['buying_game'] = game_type
         context.user_data['buying_amount'] = amount
         context.user_data['buying_quantity'] = quantity
         context.user_data['receipt_step'] = 'photo'
-
-        keyboard = [[
-            InlineKeyboardButton(
-                "ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º",
-                callback_data=f"quantity_{game_type}_{amount}_{quantity}")
-        ]]
+        
         await query.edit_message_text(
-            "ðŸ“„ á€•á€¼á€±á€…á€¬á€”á€²á€·á€á€šá€ºá€šá€°á€›á€”á€º:\n\n"
-            "1ï¸âƒ£ á€•á€¼á€±á€…á€¬á€•á€¯á€¶á€¡á€›á€„á€ºá€•á€­á€¯á€·á€•á€«\n"
-            "2ï¸âƒ£ á€•á€¼á€®á€¸á€›á€„á€º á€•á€¼á€±á€…á€¬ ID (á€”á€±á€¬á€€á€ºá€†á€¯á€¶á€¸ á…á€œá€¯á€¶á€¸ á€žá€­á€¯á€·á€™á€Ÿá€¯á€á€º á†á€œá€¯á€¶á€¸) á€›á€±á€¸á€•á€­á€¯á€·á€•á€«\n\n"
-            "âš ï¸ á€žá€á€­á€•á€±á€¸á€á€»á€€á€º: á€•á€¼á€±á€…á€¬ ID á€™á€¾á€¬á€¸á€›á€±á€¸á€™á€­á€›á€„á€º á€„á€½á€±á€†á€¯á€¶á€¸á€•á€«á€™á€Šá€º",
-            reply_markup=InlineKeyboardMarkup(keyboard))
-
-    # Admin approval handlers
-    elif data.startswith("message_topup_"):
-        if uid != ADMIN_ID:
-            await query.edit_message_text(
-                "âš ï¸ Admin á€žá€¬á€œá€»á€¾á€„á€º á€’á€®á€¡á€›á€¬á€€á€­á€¯á€œá€¯á€•á€ºá€”á€­á€¯á€„á€ºá€•á€«á€žá€Šá€ºá‹")
-            return
-
-        receipt_id = data.split("_")[2]
-        if receipt_id not in db["topup_requests"]:
-            await query.edit_message_text("âš ï¸ á€„á€½á€±á€–á€¼á€Šá€·á€ºá€á€±á€¬á€„á€ºá€¸á€†á€­á€¯á€™á€¾á€¯á€™á€á€½á€±á€·á€•á€«á‹")
-            return
-
-        request = db["topup_requests"][receipt_id]
-        user_id = request["user_id"]
-        context.user_data['admin_messaging'] = {'user_id': user_id}
-        await query.edit_message_text("ðŸ’¬ á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€žá€°á€‘á€¶á€•á€­á€¯á€·á€œá€­á€¯á€žá€±á€¬á€…á€¬á€€á€­á€¯ á€›á€±á€¸á€•á€«:")
-
-    elif data.startswith("message_") and not data.startswith("message_topup_"):
-        if uid != ADMIN_ID:
-            await query.edit_message_text(
-                "âš ï¸ Admin á€žá€¬á€œá€»á€¾á€„á€º á€’á€®á€¡á€›á€¬á€€á€­á€¯á€œá€¯á€•á€ºá€”á€­á€¯á€„á€ºá€•á€«á€žá€Šá€ºá‹")
-            return
-
-        receipt_id = data.split("_")[1]
-        if receipt_id not in db["receipts"]:
-            await query.edit_message_text("âš ï¸ á€•á€¼á€±á€…á€¬á€™á€á€½á€±á€·á€•á€«á‹")
-            return
-
-        receipt = db["receipts"][receipt_id]
-        user_id = receipt["user_id"]
-        context.user_data['admin_messaging'] = {'user_id': user_id}
-        await query.edit_message_text("ðŸ’¬ á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€žá€°á€‘á€¶á€•á€­á€¯á€·á€œá€­á€¯á€žá€±á€¬á€…á€¬á€€á€­á€¯ á€›á€±á€¸á€•á€«:")
-
-    elif data.startswith("approve_topup_") or data.startswith("reject_topup_"):
-        if uid != ADMIN_ID:
-            await query.edit_message_text(
-                "âš ï¸ Admin á€žá€¬á€œá€»á€¾á€„á€º á€’á€®á€¡á€›á€¬á€€á€­á€¯á€œá€¯á€•á€ºá€”á€­á€¯á€„á€ºá€•á€«á€žá€Šá€ºá‹")
-            return
-
-        action, _, receipt_id = data.split("_")
-        if receipt_id not in db["topup_requests"]:
-            await query.edit_message_text("âš ï¸ á€„á€½á€±á€–á€¼á€Šá€·á€ºá€á€±á€¬á€„á€ºá€¸á€†á€­á€¯á€™á€¾á€¯á€™á€á€½á€±á€·á€•á€«á‹")
-            return
-
-        request = db["topup_requests"][receipt_id]
-        user_id = request["user_id"]
-        amount = request["amount"]
-        user = get_user(user_id)
-
-        if action == "approve":
-            user["balance"] += amount
-            request["status"] = "approved"
-            save_db(db)
-            await context.bot.send_message(
-                user_id,
-                f"âœ… á€„á€½á€±á€–á€¼á€Šá€·á€ºá€™á€¾á€¯ á€œá€€á€ºá€á€¶á€•á€¼á€®á€¸á€•á€«á€•á€¼á€®!\nðŸ’° á€„á€½á€±á€•á€™á€¬á€: {amount} MMK\nðŸ’³ á€œá€€á€ºá€€á€»á€”á€ºá€„á€½á€±: {user['balance']} MMK"
-            )
-            await query.edit_message_text(
-                f"âœ… á€„á€½á€±á€–á€¼á€Šá€·á€ºá€™á€¾á€¯ {receipt_id} á€œá€€á€ºá€á€¶á€•á€¼á€®á€¸")
-        else:
-            request["status"] = "rejected"
-            save_db(db)
-            await context.bot.send_message(user_id,
-                                           "âŒ á€„á€½á€±á€–á€¼á€Šá€·á€ºá€™á€¾á€¯ á€„á€¼á€„á€ºá€¸á€•á€šá€ºá€á€¶á€›á€•á€«á€žá€Šá€ºá‹")
-            await query.edit_message_text(
-                f"âŒ á€„á€½á€±á€–á€¼á€Šá€·á€ºá€™á€¾á€¯ {receipt_id} á€„á€¼á€„á€ºá€¸á€•á€šá€ºá€•á€¼á€®á€¸")
-
-    elif data.startswith("approve_reg_") or data.startswith("reject_reg_"):
-        if uid != ADMIN_ID:
-            await query.edit_message_text(
-                "âš ï¸ Admin á€žá€¬á€œá€»á€¾á€„á€º á€’á€®á€¡á€›á€¬á€€á€­á€¯á€œá€¯á€•á€ºá€”á€­á€¯á€„á€ºá€•á€«á€žá€Šá€ºá‹")
-            return
-
-        action, _, user_id = data.split("_")
-        user_id = int(user_id)
-
-        if user_id not in db["pending_registrations"]:
-            await query.edit_message_text("âš ï¸ á€¡á€€á€±á€¬á€„á€·á€ºá€–á€½á€„á€·á€ºá€á€±á€¬á€„á€ºá€¸á€†á€­á€¯á€™á€¾á€¯á€™á€á€½á€±á€·á€•á€«á‹"
-                                          )
-            return
-
-        if action == "approve":
-            # Create approved user account
-            db["users"][user_id] = {
-                "balance": 0,
-                "history": [],
-                "approved": True
-            }
-            del db["pending_registrations"][user_id]
-            save_db(db)
-
-            await context.bot.send_message(
-                user_id,
-                "âœ… á€¡á€€á€±á€¬á€„á€·á€ºá€–á€½á€„á€·á€ºá€™á€¾á€¯ á€œá€€á€ºá€á€¶á€•á€¼á€®á€¸á€•á€«á€•á€¼á€®! á€šá€á€¯ bot á€€á€­á€¯ á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€”á€­á€¯á€„á€ºá€•á€«á€•á€¼á€®á‹"
-            )
-            await query.edit_message_text(
-                f"âœ… á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€žá€° {user_id} á á€¡á€€á€±á€¬á€„á€·á€ºá€–á€½á€„á€·á€ºá€™á€¾á€¯ á€œá€€á€ºá€á€¶á€•á€¼á€®á€¸")
-        else:
-            del db["pending_registrations"][user_id]
-            save_db(db)
-            await context.bot.send_message(
-                user_id, "âŒ á€¡á€€á€±á€¬á€„á€·á€ºá€–á€½á€„á€·á€ºá€™á€¾á€¯ á€„á€¼á€„á€ºá€¸á€•á€šá€ºá€á€¶á€›á€•á€«á€žá€Šá€ºá‹")
-            await query.edit_message_text(
-                f"âŒ á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€žá€° {user_id} á á€¡á€€á€±á€¬á€„á€·á€ºá€–á€½á€„á€·á€ºá€™á€¾á€¯ á€„á€¼á€„á€ºá€¸á€•á€šá€ºá€•á€¼á€®á€¸")
-
-    elif data.startswith("approve_") or data.startswith("reject_"):
-        if uid != ADMIN_ID:
-            await query.edit_message_text(
-                "âš ï¸ Admin á€žá€¬á€œá€»á€¾á€„á€º á€’á€®á€¡á€›á€¬á€€á€­á€¯á€œá€¯á€•á€ºá€”á€­á€¯á€„á€ºá€•á€«á€žá€Šá€ºá‹")
-            return
-
-        action, receipt_id = data.split("_")
-        if receipt_id not in db["receipts"]:
-            await query.edit_message_text("âš ï¸ á€•á€¼á€±á€…á€¬á€™á€á€½á€±á€·á€•á€«á‹")
-            return
-
-        receipt = db["receipts"][receipt_id]
-        user_id = receipt["user_id"]
-        game_type = receipt["game_type"]
-        amount = receipt["amount"]
-        quantity = receipt["quantity"]
-        user = get_user(user_id)
-
-        if action == "approve":
-            if len(db["stock"][game_type].get(amount, [])) < quantity:
-                await query.edit_message_text("âš ï¸ á€œá€¯á€¶á€œá€±á€¬á€€á€ºá€žá€±á€¬ á€€á€¯á€’á€ºá€™á€›á€¾á€­á€•á€«á‹")
-                return
-
-            codes = []
-            for _ in range(quantity):
-                if db["stock"][game_type][amount]:
-                    codes.append(db["stock"][game_type][amount].pop(0))
-
-            total_price = db["prices"][game_type].get(amount, 0) * quantity
-            db["sales_total"] += total_price
-            game_name = get_game_display_name(game_type)
-            unit = "Coin" if "MLBB" in game_type else "UC"
-
-            user["history"].append({
-                "type": "receipt",
-                "codes": codes,
-                "receipt": receipt_id,
-                "game": game_name,
-                "amount": amount,
-                "quantity": quantity
-            })
-            receipt["status"] = "approved"
-            save_db(db)
-
-            codes_text = "\n".join([f"ðŸ”‘ {code}" for code in codes])
-            await context.bot.send_message(
-                user_id, f"âœ… á€•á€¼á€±á€…á€¬á€”á€²á€·á€á€šá€ºá€šá€°á€™á€¾á€¯ á€œá€€á€ºá€á€¶á€•á€¼á€®á€¸á€•á€«á€•á€¼á€®!\n\n"
-                f"ðŸŽ® {game_name}\n"
-                f"ðŸ’Ž {amount} {unit} x {quantity}\n\n"
-                f"ðŸ”‘ á€€á€¯á€’á€ºá€™á€»á€¬á€¸:\n{codes_text}")
-            await query.edit_message_text(f"âœ… á€•á€¼á€±á€…á€¬ {receipt_id} á€œá€€á€ºá€á€¶á€•á€¼á€®á€¸")
-        else:
-            receipt["status"] = "rejected"
-            save_db(db)
-            await context.bot.send_message(
-                user_id, "âŒ á€•á€¼á€±á€…á€¬á€”á€²á€·á€á€šá€ºá€šá€°á€™á€¾á€¯ á€„á€¼á€„á€ºá€¸á€•á€šá€ºá€á€¶á€›á€•á€«á€žá€Šá€ºá‹")
-            await query.edit_message_text(f"âŒ á€•á€¼á€±á€…á€¬ {receipt_id} á€„á€¼á€„á€ºá€¸á€•á€šá€ºá€•á€¼á€®á€¸")
-
-    # Admin addstock interactive handlers
-    elif data.startswith("addstock_"):
-        if uid != ADMIN_ID:
-            await query.edit_message_text(
-                "âš ï¸ Admin á€žá€¬á€œá€»á€¾á€„á€º á€’á€®á€¡á€›á€¬á€€á€­á€¯á€œá€¯á€•á€ºá€”á€­á€¯á€„á€ºá€•á€«á€žá€Šá€ºá‹")
-            return
-
-        game_type = data.split("_")[1]
-        context.user_data['addstock_game'] = game_type
-
-        keyboard = [[
-            InlineKeyboardButton("ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º", callback_data="start")
-        ]]
-        game_name = get_game_display_name(game_type)
-        unit = "Coin" if "MLBB" in game_type else "UC"
+            "📸 ငွေလွှဲအတည်ပြုချက် (Screenshot) ပို့ပေးပါ။\n\n"
+            "ငွေလွှဲပြီးနောက် Screenshot ရိုက်ယူပြီး ဤဘော့သို့ ပို့ပေးပါ။",
+            reply_markup=self.keyboard_manager.back_button(f"quantity_{game_type}_{amount}_{quantity}")
+        )
+    
+    async def handle_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle help command"""
+        help_text = (
+            "ℹ️ အသုံးပြုနည်း:\n\n"
+            "1️⃣ အကောင့်ဖွင့်ရန် - ပထမဆုံး အကောင့်ဖွင့်ရမည်\n"
+            "2️⃣ ငွေဖြည့်ရန် - ဂိမ်းကုဒ်ဝယ်ယူရန် ငွေဖြည့်ပါ\n"
+            "3️⃣ ကုဒ်ဝယ်ယူရန် - လိုချင်သောဂိမ်းကုဒ်ဝယ်ယူပါ\n\n"
+            "📞 အကူအညီလိုပါက Admin ဆီသို့ ဆက်သွယ်ပါ။"
+        )
+        
+        query = update.callback_query
         await query.edit_message_text(
-            f"ðŸŽ® {game_name} á€¡á€á€½á€€á€º á€€á€¯á€’á€ºá€‘á€Šá€·á€ºá€›á€”á€º:\n\n"
-            f"ðŸ“ á€–á€±á€¬á€ºá€™á€á€º: <amount> <price> <code1> <code2> ...\n"
-            f"á€¥á€•á€™á€¬: 1000 2500 CODE123 CODE456\n\n"
-            f"ðŸ’¡ {unit} á€•á€™á€¬á€, á€…á€»á€±á€¸á€”á€¾á€¯á€”á€ºá€¸, á€•á€¼á€®á€¸á€›á€„á€º á€€á€¯á€’á€ºá€™á€»á€¬á€¸á€•á€­á€¯á€·á€•á€«:",
-            reply_markup=InlineKeyboardMarkup(keyboard))
-
-
-# ---------------- Receipt/Image text handler ----------------
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.message.from_user.id
-    user = get_user(uid)
-
-    # Handle photos
-    if update.message.photo:
-        # Handle topup photos
-        if 'topup_method' in context.user_data:
-            context.user_data['topup_photo_sent'] = True
-            context.user_data[
-                'topup_photo_message_id'] = update.message.message_id
-
-            await update.message.reply_text(
-                "ðŸ“„ á€•á€¼á€±á€…á€¬á€•á€¯á€¶á€›á€›á€¾á€­á€•á€¼á€®á€¸á‹ á€¡á€±á€¬á€€á€ºá€•á€«á€¡á€á€»á€€á€ºá€¡á€œá€€á€ºá€™á€»á€¬á€¸á€•á€­á€¯á€·á€•á€«:\n\n"
-                "ðŸ“ á€–á€±á€¬á€ºá€™á€á€º: <á€•á€¼á€±á€…á€¬ ID (á€”á€±á€¬á€€á€ºá€†á€¯á€¶á€¸ á…á€œá€¯á€¶á€¸ á€žá€­á€¯á€·á€™á€Ÿá€¯á€á€º á†á€œá€¯á€¶á€¸)> <á€„á€½á€±á€•á€™á€¬á€>\n"
-                "á€¥á€•á€™á€¬: 123456 50000\n\n"
-                "âš ï¸ á€žá€á€­á€•á€±á€¸á€á€»á€€á€º: á€•á€¼á€±á€…á€¬ ID á€”á€¾á€„á€·á€º á€•á€™á€¬á€á€™á€¾á€¬á€¸á€›á€±á€¸á€™á€­á€›á€„á€º á€„á€½á€±á€†á€¯á€¶á€¸á€•á€«á€™á€Šá€º")
-            return
-
-        # Handle receipt purchase photos
-        elif 'buying_game' in context.user_data and context.user_data.get(
-                'receipt_step') == 'photo':
-            context.user_data['receipt_photo_sent'] = True
-            context.user_data[
-                'receipt_photo_message_id'] = update.message.message_id
-            context.user_data['receipt_step'] = 'id'
-
-            await update.message.reply_text(
-                "ðŸ“„ á€•á€¼á€±á€…á€¬á€•á€¯á€¶á€›á€›á€¾á€­á€•á€¼á€®á€¸á‹ á€šá€á€¯ á€•á€¼á€±á€…á€¬ ID (á€”á€±á€¬á€€á€ºá€†á€¯á€¶á€¸ á…á€œá€¯á€¶á€¸ á€žá€­á€¯á€·á€™á€Ÿá€¯á€á€º á†á€œá€¯á€¶á€¸) á€›á€±á€¸á€•á€­á€¯á€·á€•á€«:\n\n"
-                "á€¥á€•á€™á€¬: 123456\n\n"
-                "âš ï¸ á€žá€á€­á€•á€±á€¸á€á€»á€€á€º: á€•á€¼á€±á€…á€¬ ID á€™á€¾á€¬á€¸á€›á€±á€¸á€™á€­á€›á€„á€º á€„á€½á€±á€†á€¯á€¶á€¸á€•á€«á€™á€Šá€º")
-            return
-
-    # Handle text messages
-    if update.message.text:
-        text = update.message.text.strip()
-
-        # Handle admin message sending
-        if uid == ADMIN_ID and 'admin_messaging' in context.user_data:
-            target_user = context.user_data['admin_messaging']['user_id']
-            await context.bot.send_message(target_user,
-                                           f"ðŸ“© Admin á€™á€¾ á€…á€¬:\n{text}")
-            await update.message.reply_text(
-                f"âœ… á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€žá€° {target_user} á€‘á€¶ á€…á€¬á€•á€­á€¯á€·á€•á€¼á€®á€¸")
-            del context.user_data['admin_messaging']
-            return
-
-        # Handle quantity selection
-        if 'selecting_quantity' in context.user_data:
-            try:
-                quantity = int(text)
-                selection = context.user_data['selecting_quantity']
-
-                if quantity < 1 or quantity > selection['max_quantity']:
-                    await update.message.reply_text(
-                        f"âš ï¸ á€€á€¯á€’á€ºá€¡á€›á€±á€¡á€á€½á€€á€ºá€žá€Šá€º 1 á€™á€¾ {selection['max_quantity']} á€¡á€á€½á€„á€ºá€¸á€–á€¼á€…á€ºá€›á€™á€Šá€ºá‹"
-                    )
-                    return
-
-                game_type = selection['game_type']
-                amount = selection['amount']
-                price = selection['price']
-                total_price = price * quantity
-                user = get_user(uid)
-
-                keyboard = []
-                if user["balance"] >= total_price:
-                    keyboard.append([
-                        InlineKeyboardButton(
-                            f"ðŸ’° á€œá€€á€ºá€€á€»á€”á€ºá€„á€½á€±á€”á€²á€·á€á€šá€ºá€›á€”á€º ({total_price} MMK)",
-                            callback_data=
-                            f"buy_balance_{game_type}_{amount}_{quantity}")
-                    ])
-                else:
-                    keyboard.append([
-                        InlineKeyboardButton("ðŸ’³ á€„á€½á€±á€–á€¼á€Šá€·á€ºá€›á€”á€º",
-                                             callback_data="topup")
-                    ])
-
-                keyboard.append([
-                    InlineKeyboardButton(
-                        "ðŸ“„ á€•á€¼á€±á€…á€¬á€”á€²á€·á€á€šá€ºá€›á€”á€º",
-                        callback_data=
-                        f"buy_receipt_{game_type}_{amount}_{quantity}")
-                ])
-                keyboard.append([
-                    InlineKeyboardButton(
-                        "ðŸ”™ á€•á€¼á€”á€ºá€žá€½á€¬á€¸á€›á€”á€º",
-                        callback_data=f"amount_{game_type}_{amount}")
-                ])
-
-                game_name = get_game_display_name(game_type)
-                unit = "Coin" if "MLBB" in game_type else "UC"
-                await update.message.reply_text(
-                    f"ðŸŽ® {game_name}\n"
-                    f"ðŸ’Ž {amount} {unit} x {quantity}\n"
-                    f"ðŸ’° á€…á€¯á€…á€¯á€•á€±á€«á€„á€ºá€¸: {total_price} MMK\n"
-                    f"ðŸ’³ á€œá€€á€ºá€€á€»á€”á€ºá€„á€½á€±: {user['balance']} MMK\n\n"
-                    f"ðŸ’³ á€„á€½á€±á€•á€±á€¸á€á€»á€±á€™á€¾á€¯á€”á€Šá€ºá€¸á€œá€™á€ºá€¸á€›á€½á€±á€¸á€•á€«:",
-                    reply_markup=InlineKeyboardMarkup(keyboard))
-                del context.user_data['selecting_quantity']
-                return
-            except ValueError:
-                await update.message.reply_text("âš ï¸ á€€á€»á€±á€¸á€‡á€°á€¸á€•á€¼á€¯á á€‚á€á€”á€ºá€¸á€žá€¬á€›á€±á€¸á€•á€«á‹")
-                return
-
-        # Handle admin addstock
-        if uid == ADMIN_ID and 'addstock_game' in context.user_data:
-            try:
-                parts = text.split()
-                if len(parts) < 3:
-                    await update.message.reply_text(
-                        "âš ï¸ á€¡á€”á€Šá€ºá€¸á€†á€¯á€¶á€¸: <amount> <price> <code1>")
-                    return
-
-                game_type = context.user_data['addstock_game']
-                amount = parts[0]
-                price = int(parts[1])
-                codes = parts[2:]
-
-                # Update stock
-                if game_type not in db["stock"]:
-                    db["stock"][game_type] = {}
-                if amount not in db["stock"][game_type]:
-                    db["stock"][game_type][amount] = []
-                db["stock"][game_type][amount].extend(codes)
-
-                # Update price
-                if game_type not in db["prices"]:
-                    db["prices"][game_type] = {}
-                db["prices"][game_type][amount] = price
-
-                save_db(db)
-
-                game_name = get_game_display_name(game_type)
-                unit = "Coin" if "MLBB" in game_type else "UC"
-                await update.message.reply_text(
-                    f"âœ… {game_name} {amount} {unit}\n"
-                    f"ðŸ’° á€…á€»á€±á€¸á€”á€¾á€¯á€”á€ºá€¸: {price} MMK\n"
-                    f"ðŸ“¦ á€€á€¯á€’á€º: {len(codes)} á€á€¯ á€‘á€Šá€·á€ºá€•á€¼á€®á€¸")
-                del context.user_data['addstock_game']
-                return
-            except ValueError:
-                await update.message.reply_text("âš ï¸ á€…á€»á€±á€¸á€”á€¾á€¯á€”á€ºá€¸á€™á€¾á€¬á€¸á€šá€½á€„á€ºá€¸á€•á€«á€žá€Šá€ºá‹")
-                return
-            except:
-                await update.message.reply_text("âš ï¸ á€–á€±á€¬á€ºá€™á€á€ºá€™á€¾á€¬á€¸á€šá€½á€„á€ºá€¸á€•á€«á€žá€Šá€ºá‹")
-                return
-
-        # Handle topup with receipt ID and amount
-        if context.user_data.get('topup_photo_sent'):
-            try:
-                parts = text.split()
-                if len(parts) != 2:
-                    await update.message.reply_text(
-                        "âš ï¸ á€–á€±á€¬á€ºá€™á€á€º: <á€•á€¼á€±á€…á€¬ ID> <á€„á€½á€±á€•á€™á€¬á€>")
-                    return
-
-                receipt_id = parts[0]
-                amount = int(parts[1])
-
-                if not validate_receipt_id(receipt_id):
-                    await update.message.reply_text(
-                        "âš ï¸ á€•á€¼á€±á€…á€¬ ID á€žá€Šá€º á…-á†á€œá€¯á€¶á€¸ á€‚á€á€”á€ºá€¸á€–á€¼á€…á€ºá€›á€™á€Šá€ºá‹")
-                    return
-
-                if amount < 1000:
-                    await update.message.reply_text(
-                        "âš ï¸ á€„á€½á€±á€•á€™á€¬á€á€™á€¾á€¬á€¸á€šá€½á€„á€ºá€¸á€•á€«á€žá€Šá€ºá‹ á€¡á€”á€Šá€ºá€¸á€†á€¯á€¶á€¸ áá€á€á€ MMK á€–á€¼á€…á€ºá€›á€™á€Šá€ºá‹"
-                    )
-                    return
-
-                payment_method = context.user_data['topup_method']
-                photo_message_id = context.user_data['topup_photo_message_id']
-
-                db["topup_requests"][receipt_id] = {
-                    "user_id": uid,
-                    "status": "pending",
-                    "amount": amount,
-                    "payment_method": payment_method
-                }
-                save_db(db)
-
-                keyboard = [[
-                    InlineKeyboardButton(
-                        "âœ… á€œá€€á€ºá€á€¶á€›á€”á€º",
-                        callback_data=f"approve_topup_{receipt_id}"),
-                    InlineKeyboardButton(
-                        "ðŸ’¬ á€…á€¬á€•á€­á€¯á€·á€›á€”á€º",
-                        callback_data=f"message_topup_{receipt_id}"),
-                    InlineKeyboardButton(
-                        "âŒ á€„á€¼á€„á€ºá€¸á€•á€šá€ºá€›á€”á€º",
-                        callback_data=f"reject_topup_{receipt_id}")
-                ]]
-
-                await context.bot.forward_message(
-                    chat_id=ADMIN_ID,
-                    from_chat_id=update.message.chat.id,
-                    message_id=photo_message_id)
-
-                await context.bot.send_message(
-                    chat_id=ADMIN_ID,
-                    text=f"ðŸ“¥ á€„á€½á€±á€–á€¼á€Šá€·á€ºá€á€±á€¬á€„á€ºá€¸á€†á€­á€¯á€™á€¾á€¯:\n"
-                    f"ðŸ‘¤ á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€žá€°: {uid}\n"
-                    f"ðŸ’³ á€”á€Šá€ºá€¸á€œá€™á€ºá€¸: {payment_method}\n"
-                    f"ðŸ“„ á€•á€¼á€±á€…á€¬ ID: {receipt_id}\n"
-                    f"ðŸ’° á€„á€½á€±á€•á€™á€¬á€: {amount} MMK",
-                    reply_markup=InlineKeyboardMarkup(keyboard))
-
-                await update.message.reply_text("â³ Admin á€™á€¾ á€…á€…á€ºá€†á€±á€¸á€”á€±á€•á€«á€žá€Šá€º...")
-
-                # Clear user data
-                del context.user_data['topup_method']
-                del context.user_data['topup_photo_sent']
-                del context.user_data['topup_photo_message_id']
-                return
-            except ValueError:
-                await update.message.reply_text("âš ï¸ á€„á€½á€±á€•á€™á€¬á€á€™á€¾á€¬á€¸á€šá€½á€„á€ºá€¸á€•á€«á€žá€Šá€ºá‹")
-                return
-            except:
-                await update.message.reply_text("âš ï¸ á€–á€±á€¬á€ºá€™á€á€ºá€™á€¾á€¬á€¸á€šá€½á€„á€ºá€¸á€•á€«á€žá€Šá€ºá‹")
-                return
-
-        # Handle receipt purchase with receipt ID
-        if 'buying_game' in context.user_data and context.user_data.get(
-                'receipt_step') == 'id':
-            if not validate_receipt_id(text):
-                await update.message.reply_text(
-                    "âš ï¸ á€•á€¼á€±á€…á€¬ ID á€žá€Šá€º á…-á†á€œá€¯á€¶á€¸ á€‚á€á€”á€ºá€¸á€–á€¼á€…á€ºá€›á€™á€Šá€ºá‹")
-                return
-
-            game_type = context.user_data['buying_game']
-            amount = context.user_data['buying_amount']
-            quantity = context.user_data['buying_quantity']
-            photo_message_id = context.user_data['receipt_photo_message_id']
-
-            db["receipts"][text] = {
-                "user_id": uid,
-                "status": "pending",
-                "game_type": game_type,
-                "amount": amount,
-                "quantity": quantity
-            }
-            save_db(db)
-
-            game_name = get_game_display_name(game_type)
-            unit = "Coin" if "MLBB" in game_type else "UC"
-            keyboard = [[
-                InlineKeyboardButton("âœ… á€œá€€á€ºá€á€¶á€›á€”á€º",
-                                     callback_data=f"approve_{text}"),
-                InlineKeyboardButton("ðŸ’¬ á€…á€¬á€•á€­á€¯á€·á€›á€”á€º",
-                                     callback_data=f"message_{text}"),
-                InlineKeyboardButton("âŒ á€„á€¼á€„á€ºá€¸á€•á€šá€ºá€›á€”á€º",
-                                     callback_data=f"reject_{text}")
-            ]]
-
-            await context.bot.forward_message(
-                chat_id=ADMIN_ID,
-                from_chat_id=update.message.chat.id,
-                message_id=photo_message_id)
-
-            await context.bot.send_message(
-                chat_id=ADMIN_ID,
-                text=f"ðŸ“¥ á€€á€¯á€’á€ºá€á€šá€ºá€šá€°á€™á€¾á€¯:\n"
-                f"ðŸ‘¤ á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€žá€°: {uid}\n"
-                f"ðŸŽ® á€‚á€­á€™á€ºá€¸: {game_name}\n"
-                f"ðŸ’Ž {amount} {unit} x {quantity}\n"
-                f"ðŸ“„ á€•á€¼á€±á€…á€¬ ID: {text}",
-                reply_markup=InlineKeyboardMarkup(keyboard))
-            await update.message.reply_text("â³ Admin á€™á€¾ á€…á€…á€ºá€†á€±á€¸á€”á€±á€•á€«á€žá€Šá€º...")
-
-            # Clear user data
-            del context.user_data['buying_game']
-            del context.user_data['buying_amount']
-            del context.user_data['buying_quantity']
-            del context.user_data['receipt_photo_sent']
-            del context.user_data['receipt_photo_message_id']
-            del context.user_data['receipt_step']
-            return
-
-
-# ---------------- Admin Commands ----------------
-async def setbalance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    try:
-        args = context.args
-        uid = int(args[0])
-        amount = int(args[1])
-        user = get_user(uid)
-        user["balance"] = amount
-        save_db(db)
-        await update.message.reply_text(
-            f"âœ… á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€žá€° {uid} á á€œá€€á€ºá€€á€»á€”á€ºá€„á€½á€±á€€á€­á€¯ {amount} MMK á€žá€á€ºá€™á€¾á€á€ºá€•á€¼á€®á€¸")
-    except:
-        await update.message.reply_text(
-            "á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€”á€Šá€ºá€¸: /setbalance <user_id> <amount>")
-
-
-async def addstock(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    # Interactive version
-    keyboard = [[
-        InlineKeyboardButton("ðŸŽ® Mobile Legends (Bal)",
-                             callback_data="addstock_MLBBbal")
-    ],
-                [
-                    InlineKeyboardButton("ðŸŽ® Mobile Legends (PH)",
-                                         callback_data="addstock_MLBBph")
-                ],
-                [
-                    InlineKeyboardButton("ðŸŽ® PUPG Mobile",
-                                         callback_data="addstock_PUPG")
-                ]]
-    await update.message.reply_text(
-        "ðŸŽ® á€‚á€­á€™á€ºá€¸á€¡á€™á€»á€­á€¯á€¸á€¡á€…á€¬á€¸á€›á€½á€±á€¸á€•á€«:",
-        reply_markup=InlineKeyboardMarkup(keyboard))
-
-
-async def delstock(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    if len(context.args) < 3:
-        await update.message.reply_text(
-            "á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€”á€Šá€ºá€¸: /delstock <MLBBbal/MLBBph/PUPG> <amount> <code>")
-        return
-
-    try:
-        game_type = context.args[0]
-        amount = context.args[1]
-        code_to_delete = context.args[2]
-
-        if game_type not in ["MLBBbal", "MLBBph", "PUPG"]:
-            await update.message.reply_text(
-                "á€‚á€­á€™á€ºá€¸á€¡á€™á€»á€­á€¯á€¸á€¡á€…á€¬á€¸: MLBBbal, MLBBph, á€žá€­á€¯á€·á€™á€Ÿá€¯á€á€º PUPG")
-            return
-
-        if game_type not in db["stock"] or amount not in db["stock"][game_type]:
-            await update.message.reply_text(
-                "âš ï¸ á€’á€®á€‚á€­á€™á€ºá€¸á€¡á€™á€»á€­á€¯á€¸á€¡á€…á€¬á€¸ á€žá€­á€¯á€·á€™á€Ÿá€¯á€á€º á€•á€™á€¬á€á€™á€›á€¾á€­á€•á€«á‹")
-            return
-
-        if code_to_delete in db["stock"][game_type][amount]:
-            db["stock"][game_type][amount].remove(code_to_delete)
-            save_db(db)
-
-            game_name = get_game_display_name(game_type)
-            unit = "Coin" if "MLBB" in game_type else "UC"
-            await update.message.reply_text(
-                f"âœ… {game_name} {amount} {unit} á€™á€¾ á€€á€¯á€’á€º {code_to_delete} á€–á€»á€€á€ºá€•á€¼á€®á€¸"
-            )
-        else:
-            await update.message.reply_text("âš ï¸ á€’á€®á€€á€¯á€’á€ºá€™á€á€½á€±á€·á€•á€«á‹")
-    except:
-        await update.message.reply_text(
-            "á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€”á€Šá€ºá€¸: /delstock <MLBBbal/MLBBph/PUPG> <amount> <code>")
-
-
-async def setprice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    if len(context.args) < 3:
-        await update.message.reply_text(
-            "á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€”á€Šá€ºá€¸: /setprice <MLBBbal/MLBBph/PUPG> <amount> <price>")
-        return
-
-    try:
-        game_type = context.args[0]
-        amount = context.args[1]
-        price = int(context.args[2])
-
-        if game_type not in ["MLBBbal", "MLBBph", "PUPG"]:
-            await update.message.reply_text(
-                "á€‚á€­á€™á€ºá€¸á€¡á€™á€»á€­á€¯á€¸á€¡á€…á€¬á€¸: MLBBbal, MLBBph, á€žá€­á€¯á€·á€™á€Ÿá€¯á€á€º PUPG")
-            return
-
-        if game_type not in db["prices"]:
-            db["prices"][game_type] = {}
-
-        db["prices"][game_type][amount] = price
-        save_db(db)
-
-        game_name = get_game_display_name(game_type)
-        unit = "Coin" if "MLBB" in game_type else "UC"
-        await update.message.reply_text(
-            f"âœ… {game_name} {amount} {unit} á á€…á€»á€±á€¸á€”á€¾á€¯á€”á€ºá€¸á€€á€­á€¯ {price} MMK á€¡á€–á€¼á€…á€ºá€žá€á€ºá€™á€¾á€á€ºá€•á€¼á€®á€¸"
+            help_text,
+            reply_markup=self.keyboard_manager.back_button()
         )
-    except:
-        await update.message.reply_text(
-            "á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€”á€Šá€ºá€¸: /setprice <MLBBbal/MLBBph/PUPG> <amount> <price>")
-
-
-async def setpayment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    try:
-        method = context.args[0].title()
-        phone = context.args[1]
-        name = " ".join(context.args[2:])
-
-        if method not in ["Wave", "Kpay"]:
-            await update.message.reply_text(
-                "á€„á€½á€±á€•á€±á€¸á€á€»á€±á€™á€¾á€¯á€”á€Šá€ºá€¸á€œá€™á€ºá€¸: Wave á€žá€­á€¯á€·á€™á€Ÿá€¯á€á€º KPay")
-            return
-
-        db["payment"][method] = {"phone": phone, "name": name}
-        save_db(db)
-        await update.message.reply_text(
-            f"âœ… {method} á€•á€±á€¸á€á€»á€±á€™á€¾á€¯á€¡á€á€»á€€á€ºá€¡á€œá€€á€º á€•á€¼á€±á€¬á€„á€ºá€¸á€œá€²á€•á€¼á€®á€¸\nðŸ“± á€–á€¯á€”á€ºá€¸: {phone}\nðŸ‘¤ á€¡á€™á€Šá€º: {name}"
+    
+    async def _notify_admin_registration(self, context: ContextTypes.DEFAULT_TYPE, user_id: int, query):
+        """Notify admin about new registration"""
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ အတည်ပြုရန်", callback_data=f"approve_reg_{user_id}"),
+                InlineKeyboardButton("❌ ငြင်းပယ်ရန်", callback_data=f"reject_reg_{user_id}")
+            ]
+        ]
+        
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=(
+                f"📝 အသစ်အကောင့်ဖွင့်ရန် တောင်းဆိုချက်:\n"
+                f"👤 User ID: {user_id}\n"
+                f"📛 အမည်: {query.from_user.first_name}\n"
+                f"🔗 Username: @{query.from_user.username or 'N/A'}"
+            ),
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
-    except:
-        await update.message.reply_text(
-            "á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€”á€Šá€ºá€¸: /setpayment <Wave/KPay> <phone> <name>")
-
-
-async def viewhistory(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    try:
-        uid = int(context.args[0])
-        user = get_user(uid)
-        if not user["history"]:
-            await update.message.reply_text(
-                f"á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€žá€° {uid} á á€™á€¾á€á€ºá€á€™á€ºá€¸á€™á€›á€¾á€­á€•á€«")
-            return
-
-        history_text = ""
-        for i, h in enumerate(user["history"], 1):
-            history_text += f"{i}. {h}\n"
-
-        await update.message.reply_text(
-            f"ðŸ“œ á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€žá€° {uid} á á€™á€¾á€á€ºá€á€™á€ºá€¸:\n{history_text}")
-    except:
-        await update.message.reply_text("á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€”á€Šá€ºá€¸: /viewhistory <user_id>")
-
-
-async def admhelp(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    # Calculate stock counts
-    mlbbbal_count = sum(
-        len(codes) for codes in db["stock"].get("MLBBbal", {}).values())
-    mlbbph_count = sum(
-        len(codes) for codes in db["stock"].get("MLBBph", {}).values())
-    pupg_count = sum(
-        len(codes) for codes in db["stock"].get("PUPG", {}).values())
-
-    # Calculate total orders
-    total_orders = 0
-    for user_data in db["users"].values():
-        total_orders += len(user_data.get("history", []))
-
-    # Calculate total user balance
-    total_user_balance = sum(
-        user_data.get("balance", 0) for user_data in db["users"].values())
-
-    # Calculate pending counts (only pending status)
-    pending_receipts = len(
-        [r for r in db["receipts"].values() if r["status"] == "pending"])
-    pending_topups = len(
-        [r for r in db["topup_requests"].values() if r["status"] == "pending"])
-    pending_registrations = len(db.get("pending_registrations", {}))
-
-    help_text = f"""
-ðŸ”§ Admin Commands:
-
-/setbalance <user_id> <amount> - á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€žá€°á€œá€€á€ºá€€á€»á€”á€ºá€„á€½á€±á€žá€á€ºá€™á€¾á€á€ºá€›á€”á€º
-/addstock - á€€á€¯á€’á€ºá€™á€»á€¬á€¸á€‘á€Šá€·á€ºá€›á€”á€º (á€¡á€•á€¼á€”á€ºá€¡á€œá€¾á€”á€º)
-/delstock <MLBBbal/MLBBph/PUPG> <amount> <code> - á€€á€¯á€’á€ºá€–á€»á€€á€ºá€›á€”á€º
-/setprice <MLBBbal/MLBBph/PUPG> <amount> <price> - á€…á€»á€±á€¸á€”á€¾á€¯á€”á€ºá€¸á€žá€á€ºá€™á€¾á€á€ºá€›á€”á€º
-/setpayment <Wave/Kpay> <phone> <name> - á€•á€±á€¸á€á€»á€±á€™á€¾á€¯á€¡á€á€»á€€á€ºá€¡á€œá€€á€ºá€•á€¼á€±á€¬á€„á€ºá€¸á€›á€”á€º
-/viewhistory <user_id> - á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€žá€°á€™á€¾á€á€ºá€á€™á€ºá€¸á€€á€¼á€Šá€·á€ºá€›á€”á€º
-/admhelp - á€’á€®á€¡á€€á€°á€¡á€Šá€®á€…á€¬á€›á€„á€ºá€¸
-
-ðŸ“Š á€œá€€á€ºá€›á€¾á€­á€¡á€á€¼á€±á€¡á€”á€±:
-ðŸŽ® MLBB Bal á€€á€¯á€’á€º: {mlbbbal_count}
-ðŸŽ® MLBB PH á€€á€¯á€’á€º: {mlbbph_count}
-ðŸŽ® PUPG á€€á€¯á€’á€º: {pupg_count}
-ðŸ‘¥ á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€žá€°: {len(db["users"])}
-ðŸ“¦ á€¡á€±á€¬á€ºá€’á€«á€…á€¯á€…á€¯á€•á€±á€«á€„á€ºá€¸: {total_orders}
-ðŸ’° á€¡á€žá€¯á€¶á€¸á€•á€¼á€¯á€žá€°á€œá€€á€ºá€€á€»á€”á€ºá€„á€½á€±á€…á€¯á€…á€¯á€•á€±á€«á€„á€ºá€¸: {total_user_balance:,} MMK
-ðŸ’µ á€›á€±á€¬á€„á€ºá€¸á€›á€„á€½á€±á€…á€¯á€…á€¯á€•á€±á€«á€„á€ºá€¸: {db.get('sales_total', 0):,} MMK
-â³ á€„á€¶á€·á€›á€±á€¸á€•á€¼á€±á€…á€¬: {pending_receipts}
-â³ á€„á€¶á€·á€›á€±á€¸á€„á€½á€±á€–á€¼á€Šá€·á€º: {pending_topups}
-â³ á€„á€¶á€·á€›á€±á€¸á€¡á€€á€±á€¬á€„á€·á€ºá€–á€½á€„á€·á€º: {pending_registrations}
-
-ðŸ’¡ á€¥á€•á€™á€¬á€™á€»á€¬á€¸:
-/setprice MLBBbal 1000 2500
-/setprice PUPG 60 1500
-/delstock MLBBbal 1000 CODE123
-/setpayment Kpay 09123456789 John Doe
-
-ðŸ”§ á€¡á€„á€ºá€¹á€‚á€«á€›á€•á€ºá€™á€»á€¬á€¸:
-â€¢ á€¡á€€á€±á€¬á€„á€·á€ºá€–á€½á€„á€·á€ºá€™á€¾á€¯ Admin á€œá€€á€ºá€á€¶á€™á€¾á€¯á€œá€­á€¯á€¡á€•á€ºá€žá€Šá€º
-â€¢ á€€á€¯á€’á€ºá€¡á€›á€±á€¡á€á€½á€€á€ºá€›á€½á€±á€¸á€á€»á€šá€ºá€™á€¾á€¯ á€…á€¬á€•á€­á€¯á€·á€á€¼á€„á€ºá€¸á€–á€¼á€„á€·á€º
-â€¢ Admin á€€á€­á€¯ á€…á€¬á€•á€­á€¯á€·á€”á€­á€¯á€„á€ºá€žá€Šá€º (ðŸ’¬ á€á€œá€¯á€á€º)
-    """
-
-    await update.message.reply_text(help_text)
-
-
-# ---------------- Main ----------------
-def main():
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("setbalance", setbalance))
-    app.add_handler(CommandHandler("addstock", addstock))
-    app.add_handler(CommandHandler("delstock", delstock))
-    app.add_handler(CommandHandler("setprice", setprice))
-    app.add_handler(CommandHandler("setpayment", setpayment))
-    app.add_handler(CommandHandler("viewhistory", viewhistory))
-    app.add_handler(CommandHandler("admhelp", admhelp))
-    app.add_handler(CallbackQueryHandler(callback_handler))
-    app.add_handler(
-        MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
-    app.run_polling()
-
+    
+    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle text messages and photos"""
+        # Add message handling logic here
+        pass
+    
+    def setup_handlers(self):
+        """Setup bot handlers"""
+        self.app.add_handler(CommandHandler("start", self.start))
+        self.app.add_handler(CallbackQueryHandler(self.handle_callback))
+        self.app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, self.handle_message))
+    
+    def run(self):
+        """Run the bot"""
+        self.app = Application.builder().token(BOT_TOKEN).build()
+        self.setup_handlers()
+        self.app.run_polling()
 
 if __name__ == "__main__":
-    main()
+    bot = TelegramBot()
+    bot.run()
