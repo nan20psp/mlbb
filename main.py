@@ -8,8 +8,8 @@ from dotenv import load_dotenv
 
 # ---------------- Load Environment Variables ----------------
 load_dotenv()
-BOT_TOKEN = os.getenv("7927660379:AAEsm1s4sdi60OozbA-QiJDEJJvw5d0a9_M")
-ADMIN_ID = int(os.getenv("5821905026"))
+BOT_TOKEN = os.getenv("BOT_TOKEN", "7927660379:AAGtm-CvAunvvANaaYvzlmRVjjBgJcmEh58")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "5821905026"))
 
 # Render ပေါ်မှာ file path ကို adjust လုပ်ပါ
 DB_FILE = "/tmp/database.json" if 'RENDER' in os.environ else "database.json"
